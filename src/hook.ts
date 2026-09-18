@@ -65,6 +65,8 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
     keepThreshold: numberFrom(env.OMP_JEV_KEEP_THRESHOLD, DEFAULTS.keepThreshold),
     preserveRecentMessages: numberFrom(env.OMP_JEV_PRESERVE_RECENT, DEFAULTS.preserveRecentMessages),
     minReductionRatio: numberFrom(env.OMP_JEV_MIN_REDUCTION, DEFAULTS.minReductionRatio),
+    // Opt in explicitly to let a low score remove the call record itself.
+    allowDroppingCalls: env.OMP_JEV_ALLOW_DROPPING_CALLS === '1',
     timeoutMs: numberFrom(env.OMP_JEV_TIMEOUT_MS, DEFAULTS.timeoutMs),
   };
 }
@@ -106,6 +108,7 @@ export async function jevCompaction(
     maxStateTokens: settings.maxStateTokens,
     maxRequestTokens: settings.maxRequestTokens,
     truncateHeadChars: settings.truncateHeadChars,
+    allowDroppingCalls: settings.allowDroppingCalls ?? false,
   });
   const keptMessages = result.messages.filter((message) => message !== sentinel);
 

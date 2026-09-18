@@ -85,10 +85,12 @@ for (const keepThreshold of (process.env.THRESHOLDS ?? "0.2,0.25,0.3,0.35,0.5").
   const result = await compact([sentinel, ...mapped], new CachingAsker(client), {
     keepThreshold,
     preserveRecentMessages: 6,
+    allowDroppingCalls: process.env.ALLOW_DROP_CALLS === '1',
   });
   const after = transcriptChars(result.messages.filter((m) => m !== sentinel));
   const tokensSaved = estTokens(before) - estTokens(after);
   rows.push({
+    mode: process.env.ALLOW_DROP_CALLS === '1' ? 'calls may be dropped' : 'call records kept',
     keepThreshold,
     charsBefore: before,
     charsAfter: after,

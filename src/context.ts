@@ -82,6 +82,7 @@ export function createContextReducer(asker: JevAsker, settings: ContextReducerSe
       maxStateTokens: settings.maxStateTokens,
       maxRequestTokens: settings.maxRequestTokens,
       truncateHeadChars: settings.truncateHeadChars,
+      allowDroppingCalls: settings.allowDroppingCalls ?? false,
     });
 
     const dropped = result.stats.resultsDropped + result.stats.callsDropped;

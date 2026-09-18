@@ -105,10 +105,17 @@ export interface CompactOptions {
   maxRequestTokens?: number;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
+  /**
+   * LOCAL PATCH (omp-jev-compaction): allow removing the tool call itself,
+   * not just its output. Defaults to false here, unlike upstream, because
+   * erasing the call erases the evidence the work happened.
+   */
+  allowDroppingCalls?: boolean;
 }
 
 export interface ResolvedCompactOptions {
   goal: string;
+  allowDroppingCalls: boolean;
   keepThreshold: number;
   preserveRecentMessages: number;
   maxStateTokens: number;

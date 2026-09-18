@@ -16,6 +16,7 @@ import type {
 
 export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   goal: '',
+  allowDroppingCalls: false,
   keepThreshold: 0.5,
   preserveRecentMessages: 6,
   maxStateTokens: 25_000,
@@ -33,6 +34,8 @@ function finite(value: number | undefined, fallback: number): number {
 export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOptions {
   return {
     goal: options.goal ?? DEFAULT_OPTIONS.goal,
+    // LOCAL PATCH (omp-jev-compaction): default keeps the call record.
+    allowDroppingCalls: options.allowDroppingCalls ?? false,
     keepThreshold: finite(options.keepThreshold, DEFAULT_OPTIONS.keepThreshold),
     preserveRecentMessages: Math.max(
       0,
@@ -101,7 +104,7 @@ export function batchCalls(
 export function decideCall(
   call: Pick<ToolCall, 'id' | 'tool' | 'pinned'>,
   answer: CallAnswer,
-  options: Pick<ResolvedCompactOptions, 'keepThreshold'>,
+  options: Pick<ResolvedCompactOptions, 'keepThreshold'> & { allowDroppingCalls?: boolean },
 ): CallDecision {
   const base = { id: call.id, tool: call.tool, ...answer };
   if (call.pinned) return { ...base, action: 'keep', reason: 'pinned' };
@@ -109,6 +112,16 @@ export function decideCall(
     return { ...base, action: 'keep', reason: 'kept' };
   }
   if (answer.keepCall >= options.keepThreshold) {
+    return { ...base, action: 'drop_result', reason: 'result_dropped' };
+  }
+  /**
+   * LOCAL PATCH (omp-jev-compaction): with `allowDroppingCalls: false` a
+   * low-scoring call degrades to losing its output, never its record. Removing
+   * the call itself erases the evidence that the work happened, so the agent
+   * can repeat it or contradict its own earlier steps; keeping the record with
+   * a note costs a few tokens and makes a high threshold survivable.
+   */
+  if (options.allowDroppingCalls !== true) {
     return { ...base, action: 'drop_result', reason: 'result_dropped' };
   }
   return { ...base, action: 'drop_call', reason: 'call_dropped' };

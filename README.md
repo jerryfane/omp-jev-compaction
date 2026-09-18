@@ -80,12 +80,21 @@ All optional, read from the environment.
 | `OMP_JEV_MODEL` | per provider | Model id override |
 | `OMP_JEV_BASE_URL` | per provider | Endpoint override |
 | `OMP_JEV_KEEP_THRESHOLD` | `0.5` | Minimum probability for a call or result to stay |
+| `OMP_JEV_ALLOW_DROPPING_CALLS` | off | `1` lets a low score erase the whole call, not just its output |
 | `OMP_JEV_PRESERVE_RECENT` | `0` for compaction, `6` for context | Newest messages never touched |
 | `OMP_JEV_MIN_REDUCTION` | `0.25` | Saving required before replacing omp's compaction |
 | `OMP_JEV_TIMEOUT_MS` | `10000` | Per-request timeout |
 
-`keepThreshold` is the dial that matters. At `0.5` reduction was aggressive
-(9550 chars to 305). Lower it to keep more.
+`keepThreshold` is the dial that matters, but **safe mode makes it hard to
+misuse**: by default a low score can only remove a tool's *output*, never the
+record that the call happened. Erasing the call erases the evidence the work
+was done, so the agent can repeat it or contradict itself.
+
+Because of that, saving plateaus instead of running away. Measured on two real
+sessions, thresholds 0.3, 0.5 and 0.7 produce byte-identical output at 53.6%
+and 55% reduction, while the old behaviour reached 96% by deleting 63 of 66
+steps. At `0.2`, where Jev is genuinely selective, both modes are within 0.4
+points, so the safety is nearly free.
 
 ## Failure behaviour
 
