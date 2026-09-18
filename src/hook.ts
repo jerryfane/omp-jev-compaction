@@ -23,6 +23,8 @@ export interface OmpCompactionPreparation {
 }
 
 export interface JevHookSettings extends CompactOptions {
+  /** Turn on continuous per-request reduction without an environment variable. */
+  context?: boolean;
   provider?: JevProviderName;
   apiKey?: string;
   model?: string;
@@ -167,7 +169,10 @@ export interface OmpHookApi {
  * Any failure returns nothing rather than throwing, so a Jev outage or a
  * missing key degrades to omp's own compaction instead of breaking the turn.
  */
-export default function hook(pi: OmpHookApi, clientOptions: DualJevClientOptions = {}): void {
+/** Options a caller may pass when constructing the hook directly. */
+export type JevHookOptions = DualJevClientOptions & JevHookSettings;
+
+export default function hook(pi: OmpHookApi, clientOptions: JevHookOptions = {}): void {
   pi.on('session_before_compact', async (event, ctx) => {
     const env = clientOptions.env ?? process.env;
     const settings = { ...settingsFromEnv(env), ...clientOptions } as JevHookSettings & DualJevClientOptions;
@@ -208,7 +213,11 @@ export default function hook(pi: OmpHookApi, clientOptions: DualJevClientOptions
   // request only, so scoring there reduces what is sent without destroying
   // session history. This is where verbatim compaction actually belongs;
   // `session_before_compact` only sees a region omp has often already pruned.
-  if ((clientOptions.env ?? process.env).OMP_JEV_CONTEXT === '1') {
+  // Enabled by the env switch, or explicitly by a caller that constructs the
+  // hook itself (a per-directory `.omp/hooks/pre/*.ts` file, for instance).
+  const contextEnabled =
+    clientOptions.context === true || (clientOptions.env ?? process.env).OMP_JEV_CONTEXT === '1';
+  if (contextEnabled) {
     let reducer: ContextReducer | undefined;
     pi.on('context', async (event) => {
       const env = clientOptions.env ?? process.env;
