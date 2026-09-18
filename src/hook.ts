@@ -254,6 +254,13 @@ export default function hook(pi: OmpHookApi, clientOptions: JevHookOptions = {})
           {
             ...settings,
             minChars: Number(env.OMP_JEV_MIN_CHARS ?? '') || undefined,
+            cacheCeiling: Number(env.OMP_JEV_CACHE_CEILING ?? '') || undefined,
+            onSkip: (verdict) =>
+              pi.logger?.info?.(
+                `jev context skipped: ${verdict.reason} ` +
+                  `(cacheRead=${verdict.cacheRead} input=${verdict.input}, ` +
+                  `${Math.round(verdict.cacheShare * 100)}% from cache)`,
+              ),
             onStats: (stats) =>
               pi.logger?.info?.(
                 `jev context: ${stats.before}->${stats.after} chars, dropped=${stats.dropped}, ` +

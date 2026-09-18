@@ -20,6 +20,20 @@ mapping, the two integration points, and the tests.
 Re-sync the vendored core by copying `src/{compact,state,types,request}.ts`
 from upstream and updating `src/vendor/fast-jev/UPSTREAM_COMMIT`.
 
+## It leaves cache-served sessions alone
+
+Reduction rewrites the start of a conversation, which invalidates the
+provider's prefix cache. On a session the provider is already serving from
+cache that is a pure loss: a cheap request becomes a full-price one.
+
+Measured across 14 live sessions on one machine: thirteen ran at 98-100% cache
+hits costing $0.05-$0.40 per request, and one ran at 6% costing $2.87. So the
+reducer reads the last assistant message's `usage` and skips any session whose
+context is at least 80% cache reads (`OMP_JEV_CACHE_CEILING`, set 1 to
+disable). Replayed against those 14 sessions it skips exactly the 13 cheap
+ones and reduces the one paying full price, protecting $1.81 per request round
+while still capturing $2.61.
+
 ## One caution before fleet-wide use
 
 Every reduction sends the conversation state (tool names, inputs, and message
@@ -116,6 +130,7 @@ All optional, read from the environment.
 |---|---|---|
 | `OMP_JEV_CONTEXT` | **on** | `0` disables continuous per-request reduction |
 | `OMP_JEV_MIN_CHARS` | `150000` | Only reduce a context at least this large |
+| `OMP_JEV_CACHE_CEILING` | `0.8` | Skip sessions at least this share cache reads; `1` disables the guard |
 | `OMP_JEV_PROVIDER` | auto | `typesafe` or `openrouter` |
 | `OMP_JEV_MODEL` | per provider | Model id override |
 | `OMP_JEV_BASE_URL` | per provider | Endpoint override |

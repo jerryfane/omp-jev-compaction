@@ -1,3 +1,4 @@
+import { judgeCache, type CacheVerdict } from './cache-guard.js';
 import { mapOmpMessages, type OmpMessage } from './map.js';
 import { isSpillNotice, spillPayload, type SpillOptions } from './spill.js';
 import { transcriptChars } from './render.js';
@@ -48,6 +49,12 @@ export interface ContextReducerSettings extends CompactOptions {
   /** Characters of history scored per Jev request. Jev's window is 32k tokens. */
   maxWindowChars?: number;
   /**
+   * Skip sessions whose last request was at least this share cache reads.
+   * Set to 1 to disable the guard.
+   */
+  cacheCeiling?: number;
+  onSkip?: (verdict: CacheVerdict) => void;
+  /**
    * Only reduce once the context is genuinely big. Below this the round trip
    * costs more than it saves, and a short session needs no help.
    */
@@ -85,6 +92,14 @@ export function createContextReducer(asker: JevAsker, settings: ContextReducerSe
     const { messages: mapped } = mapOmpMessages(messages);
     const before = transcriptChars(mapped);
     if (before < (settings.minChars ?? DEFAULT_MIN_CHARS)) return undefined;
+
+    // Cheap-because-cached sessions must be left alone; rewriting their
+    // prefix would break the cache and cost more than it saves.
+    const verdict = judgeCache(messages, settings.cacheCeiling);
+    if (verdict.skip) {
+      settings.onSkip?.(verdict);
+      return undefined;
+    }
 
     /**
      * Jev's window is 32k tokens, so a long session can never be shown whole:
