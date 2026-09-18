@@ -1,9 +1,15 @@
 import { DualJevClient, type DualJevClientOptions, type JevProviderName } from './asker.js';
-import { CachingAsker, createContextReducer, type ContextReducer } from './context.js';
+import {
+  CachingAsker,
+  createContextReducer,
+  splitIntoWindows,
+  DEFAULT_MAX_WINDOW_CHARS,
+  type ContextReducer,
+} from './context.js';
 import { mapOmpMessages, type OmpMessage } from './map.js';
 import { renderVerbatim, transcriptChars } from './render.js';
 import { compact } from './vendor/fast-jev/compact.js';
-import type { CompactOptions, CompactResult, JevAsker } from './vendor/fast-jev/types.js';
+import type { CompactOptions, CompactResult, JevAsker, Message } from './vendor/fast-jev/types.js';
 
 /** omp's `CompactionResult`, structurally (packages/agent/src/compaction). */
 export interface OmpCompactionResult {
@@ -39,6 +45,11 @@ export interface JevHookSettings extends CompactOptions {
    * transcript that saved nothing is worse than a real summary.
    */
   minReductionRatio?: number;
+  /**
+   * Characters of history scored per Jev request, for both the per-request
+   * reducer and the compaction pass. Jev's window is 32k tokens.
+   */
+  maxWindowChars?: number;
 }
 const DEFAULTS = {
   /**
@@ -98,6 +109,43 @@ export interface JevCompactionOutcome {
 }
 
 /**
+ * Folds the per-window results into one, so callers see a single reduction.
+ * Decision ids are window-local (`t1` in each), so they are prefixed to stay
+ * unique in the diagnostics omp stores.
+ */
+function mergeResults(results: readonly CompactResult[]): CompactResult {
+  const stats = results[0]!.stats;
+  const merged: CompactResult = {
+    messages: results.flatMap((result) => result.messages),
+    decisions: results.flatMap((result, window) =>
+      result.decisions.map((decision) =>
+        results.length > 1 ? { ...decision, id: `w${window + 1}.${decision.id}` } : decision,
+      ),
+    ),
+    stats: { ...stats },
+  };
+  for (const { stats: next } of results.slice(1)) {
+    merged.stats.messagesBefore += next.messagesBefore;
+    merged.stats.messagesAfter += next.messagesAfter;
+    merged.stats.charsBefore += next.charsBefore;
+    merged.stats.charsAfter += next.charsAfter;
+    merged.stats.calls += next.calls;
+    merged.stats.kept += next.kept;
+    merged.stats.resultsDropped += next.resultsDropped;
+    merged.stats.callsDropped += next.callsDropped;
+    merged.stats.pinned += next.pinned;
+    merged.stats.requests += next.requests;
+    merged.stats.unscored += next.unscored;
+    merged.stats.ms += next.ms;
+    merged.stats.stateTokens = Math.max(merged.stats.stateTokens, next.stateTokens);
+    if (next.stateStage && next.stateStage !== merged.stats.stateStage) {
+      merged.stats.stateStage = `${merged.stats.stateStage}+${next.stateStage}`;
+    }
+  }
+  return merged;
+}
+
+/**
  * Scores the region omp is about to discard and, when the saving is real,
  * returns that region as verbatim retained history.
  */
@@ -111,24 +159,46 @@ export async function jevCompaction(
   const before = transcriptChars(messages);
 
   /**
-   * The library always pins tool calls in the first message, which is right
-   * for a whole conversation but wrong here: omp's region frequently BEGINS
-   * with the assistant message that holds every tool call, so that rule pinned
-   * the entire region (observed live: calls=1 pinned=1, reduction 0%). A
-   * sentinel takes index 0 so the real first message is scoreable, and it is
-   * dropped again before rendering.
+   * The sentinel below exists because the library always pins tool calls in
+   * the first message, which is right for a whole conversation but wrong here:
+   * omp's region frequently BEGINS with the assistant message that holds every
+   * tool call, so that rule pinned the entire region (observed live: calls=1
+   * pinned=1, reduction 0%). It takes index 0 so the real first message is
+   * scoreable, and it is dropped again before rendering.
+   *
+   * The region is scored in windows, like the per-request reducer: one
+   * `compact` call over a whole large region cannot fit its history into Jev's
+   * state budget and used to throw ("history too large for Jev (~32889 tokens
+   * after truncation, limit 25000)", observed live 2026-09-18T16:45:47),
+   * losing the Jev pass for exactly the biggest compactions it exists for.
    */
-  const sentinel = { role: 'user' as const, text: '(start of the region being compacted)', toolUses: [] };
-  const result = await compact([sentinel, ...messages], asker, {
-    goal: settings.goal,
-    keepThreshold: settings.keepThreshold ?? DEFAULTS.keepThreshold,
-    preserveRecentMessages: settings.preserveRecentMessages ?? DEFAULTS.preserveRecentMessages,
-    maxStateTokens: settings.maxStateTokens,
-    maxRequestTokens: settings.maxRequestTokens,
-    truncateHeadChars: settings.truncateHeadChars,
-    allowDroppingCalls: settings.allowDroppingCalls ?? false,
-  });
-  const keptMessages = result.messages.filter((message) => message !== sentinel);
+  if (messages.length === 0) {
+    return { skipped: 'no-tool-calls', reduction: 0 };
+  }
+  const windows = splitIntoWindows(messages, settings.maxWindowChars ?? DEFAULT_MAX_WINDOW_CHARS);
+  const perWindow: CompactResult[] = [];
+  for (const window of windows) {
+    const sentinel: Message = {
+      role: 'user',
+      text: '(start of the region being compacted)',
+      toolUses: [],
+    };
+    const scored = await compact([sentinel, ...window], asker, {
+      goal: settings.goal,
+      keepThreshold: settings.keepThreshold ?? DEFAULTS.keepThreshold,
+      preserveRecentMessages: settings.preserveRecentMessages ?? DEFAULTS.preserveRecentMessages,
+      maxStateTokens: settings.maxStateTokens,
+      maxRequestTokens: settings.maxRequestTokens,
+      truncateHeadChars: settings.truncateHeadChars,
+      allowDroppingCalls: settings.allowDroppingCalls ?? false,
+    });
+    perWindow.push({
+      ...scored,
+      messages: scored.messages.filter((message) => message !== sentinel),
+    });
+  }
+  const result = mergeResults(perWindow);
+  const keptMessages = result.messages;
 
   const after = transcriptChars(keptMessages);
   const reduction = before === 0 ? 0 : (before - after) / before;

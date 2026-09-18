@@ -184,13 +184,28 @@ export function goalFromMessages(messages: readonly Message[]): string {
     .join('\n');
 }
 
+/** Ids of the calls a fitted history still shows, structured or one-line. */
+function representedCallIds(history: readonly HistoryEntry[]): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of history) {
+    for (const call of entry.tool_calls ?? []) {
+      ids.add(typeof call === 'string' ? (call.split(' ', 1)[0] ?? '') : call.id);
+    }
+  }
+  return ids;
+}
+
 /**
  * Builds the Jev state from the whole conversation and shrinks it in stages
  * until it fits `maxStateTokens`: tool inputs are truncated, then long texts
  * are abridged oldest-first (pinned messages last), then old messages collapse
  * to a one-line note, then old tool calls shrink to one line each, then old
  * messages that carry no call are left out, then runs of old call-only
- * messages are folded into one entry. Throws when even that is too big.
+ * messages are folded into one entry, and finally whole entries are left out
+ * oldest-first. The calls those entries carried are reported as unrepresented
+ * rather than scored blind, so the state always fits and the caller never
+ * loses the request; only a state whose fixed envelope alone exceeds the
+ * limit throws.
  */
 export function fitState(
   messages: readonly Message[],
@@ -209,6 +224,7 @@ export function fitState(
     state: stateOf(history),
     tokens,
     stage,
+    representedCalls: representedCallIds(history),
   });
 
   let history: HistoryEntry[] = [];
@@ -298,7 +314,31 @@ export function fitState(
   tokens = baseTokens + perEntry.reduce((sum, n) => sum + n, 0);
   if (fits()) return fitted(history, tokens, 'old calls merged');
 
+  /**
+   * Last resort: leave whole entries out, oldest first and unpinned before
+   * pinned. Their calls are then absent from the state, so `compact` asks
+   * nothing about them and their output stays verbatim. A smaller state that
+   * scores the newest calls beats failing the whole request, which is what
+   * this used to do (observed live: "~32889 tokens after truncation").
+   */
+  const dropOrder = [
+    ...history.map((_, index) => index).filter((index) => !pinned(history[index]!)),
+    ...history.map((_, index) => index).filter((index) => pinned(history[index]!)),
+  ];
+  const dropped = new Set<number>();
+  for (const index of dropOrder) {
+    dropped.add(index);
+    tokens -= perEntry[index] ?? 0;
+    if (fits()) {
+      return fitted(
+        history.filter((_, i) => !dropped.has(i)),
+        tokens,
+        'old entries left out',
+      );
+    }
+  }
+
   throw new Error(
-    `history too large for Jev (~${tokens} tokens after truncation, limit ${options.maxStateTokens})`,
+    `Jev state envelope alone is ~${tokens} tokens, over the ${options.maxStateTokens} limit`,
   );
 }

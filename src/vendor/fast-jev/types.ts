@@ -90,6 +90,11 @@ export interface FittedState {
   tokens: number;
   /** Which fitting stage produced the state, for diagnostics. */
   stage: string;
+  /**
+   * Ids of the calls whose record survived into the state. Asking about a call
+   * the state does not show would score it blind, so the caller must not.
+   */
+  representedCalls: ReadonlySet<string>;
 }
 
 export interface CompactOptions {
@@ -141,6 +146,11 @@ export interface CompactResult {
     /** Which fitting stage the state needed, '' when no request was made. */
     stateStage: string;
     requests: number;
+    /**
+     * Candidate calls no question was asked about, because the state had to
+     * leave their record out to fit. They keep their output untouched.
+     */
+    unscored: number;
     ms: number;
   };
 }
