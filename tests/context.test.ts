@@ -75,15 +75,15 @@ describe('context reducer', () => {
     expect(await reduce(bigTranscript())).toBeUndefined();
   });
 
-  it('asks once per call and serves later turns from cache', async () => {
+  it('asks once and then reuses the decisions without asking again', async () => {
     const asker = countingAsker({ result_t1: 0.05 });
-    const cached = new CachingAsker(asker);
-    const reduce = createContextReducer(cached, { minChars: 1000, preserveRecentMessages: 1 });
-    await reduce(bigTranscript());
+    const reduce = createContextReducer(new CachingAsker(asker), { minChars: 1000, preserveRecentMessages: 1 });
+    const first = await reduce(bigTranscript());
     const asksAfterFirst = asker.calls;
-    await reduce(bigTranscript());
+    expect(asksAfterFirst).toBeGreaterThan(0);
+    const second = await reduce(bigTranscript());
     expect(asker.calls).toBe(asksAfterFirst);
-    expect(cached.answered).toBeGreaterThan(0);
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first));
   });
 });
 

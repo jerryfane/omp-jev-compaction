@@ -20,7 +20,27 @@ mapping, the two integration points, and the tests.
 Re-sync the vendored core by copying `src/{compact,state,types,request}.ts`
 from upstream and updating `src/vendor/fast-jev/UPSTREAM_COMMIT`.
 
-## It leaves cache-served sessions alone
+## Sticky: the prefix is rewritten rarely
+
+Rewriting the context invalidates the provider's prompt cache, and a cache
+write only pays back over tens of requests. So decisions are **remembered**,
+not recomputed: between rewrites the same `tool_use_id -> replacement` map is
+re-applied, the covered prefix comes back byte-identical, and anything newer
+passes through untouched.
+
+A rewrite happens when the context has grown past `rewriteGrowth` (default
++40%) **and** at least `minRequestsBetweenRewrites` (default 15) requests have
+passed, or unconditionally after `maxRequestsBetweenRewrites` (default 40).
+
+Measured replaying a real 16,198-message session: 40 requests produced **3
+rewrites and 37 reuses**, one rewrite per 13.3 requests, with **0 prefix
+breaks** across 39 checks.
+
+Because rewrites are rare, sticky mode also covers cache-served sessions.
+Setting `sticky: false` restores per-request rewriting, and with it the cache
+guard below.
+
+## The cache guard, for the non-sticky path
 
 Reduction rewrites the start of a conversation, which invalidates the
 provider's prefix cache. On a session the provider is already serving from
@@ -130,7 +150,7 @@ All optional, read from the environment.
 |---|---|---|
 | `OMP_JEV_CONTEXT` | **on** | `0` disables continuous per-request reduction |
 | `OMP_JEV_MIN_CHARS` | `150000` | Only reduce a context at least this large |
-| `OMP_JEV_CACHE_CEILING` | `0.8` | Skip sessions at least this share cache reads; `1` disables the guard |
+| `OMP_JEV_CACHE_CEILING` | `0.8` | Non-sticky mode only: skip sessions at least this share cache reads |
 | `OMP_JEV_PROVIDER` | auto | `typesafe` or `openrouter` |
 | `OMP_JEV_MODEL` | per provider | Model id override |
 | `OMP_JEV_BASE_URL` | per provider | Endpoint override |

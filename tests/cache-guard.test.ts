@@ -65,14 +65,26 @@ describe('the reducer respects the guard', () => {
     const skips: string[] = [];
     const reduce = createContextReducer(asker(0.01), {
       minChars: 1000,
+      sticky: false, // the guard only governs the per-request path
       onSkip: (v) => skips.push(v.reason),
     });
     expect(await reduce(transcript(PHOBOS))).toBeUndefined();
     expect(skips).toEqual(['cache-dominated']);
   });
 
+  it('processes a cached session when sticky, because rewrites are rare', async () => {
+    const skips: string[] = [];
+    const reduce = createContextReducer(asker(0.01), {
+      minChars: 1000,
+      preserveRecentMessages: 0,
+      onSkip: (v) => skips.push(v.reason),
+    });
+    expect(await reduce(transcript(PHOBOS))).toBeDefined();
+    expect(skips).toEqual([]);
+  });
+
   it('still reduces the expensive session', async () => {
-    const reduce = createContextReducer(asker(0.01), { minChars: 1000, preserveRecentMessages: 0 });
+    const reduce = createContextReducer(asker(0.01), { minChars: 1000, preserveRecentMessages: 0, sticky: false });
     const out = await reduce(transcript(ENYO));
     expect(out).toBeDefined();
     const result = out!.find((m) => (m as { toolCallId?: string }).toolCallId === 'c1') as {
