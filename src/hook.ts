@@ -257,7 +257,7 @@ export default function hook(pi: OmpHookApi, clientOptions: JevHookOptions = {})
             onStats: (stats) =>
               pi.logger?.info?.(
                 `jev context: ${stats.before}->${stats.after} chars, dropped=${stats.dropped}, ` +
-                  `asks=${stats.asks}, cacheHits=${stats.cached}`,
+                  `windows=${stats.windows}, asks=${stats.asks}, cacheHits=${stats.cached}`,
               ),
           },
         );

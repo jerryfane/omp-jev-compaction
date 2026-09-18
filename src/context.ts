@@ -45,12 +45,21 @@ export class CachingAsker implements JevAsker {
 export interface ContextReducerSettings extends CompactOptions {
   /** Park dropped payloads on disk and name the file. Default on. */
   spill?: SpillOptions & { enabled?: boolean };
+  /** Characters of history scored per Jev request. Jev's window is 32k tokens. */
+  maxWindowChars?: number;
   /**
    * Only reduce once the context is genuinely big. Below this the round trip
    * costs more than it saves, and a short session needs no help.
    */
   minChars?: number;
-  onStats?: (stats: { before: number; after: number; asks: number; cached: number; dropped: number }) => void;
+  onStats?: (stats: {
+    before: number;
+    after: number;
+    asks: number;
+    cached: number;
+    dropped: number;
+    windows: number;
+  }) => void;
 }
 
 export const DEFAULT_MIN_CHARS = 150_000;
@@ -77,32 +86,79 @@ export function createContextReducer(asker: JevAsker, settings: ContextReducerSe
     const before = transcriptChars(mapped);
     if (before < (settings.minChars ?? DEFAULT_MIN_CHARS)) return undefined;
 
-    const sentinel = { role: 'user' as const, text: '(start of history)', toolUses: [] };
-    const result = await compact([sentinel, ...mapped], cachingAsker, {
-      goal: settings.goal,
-      keepThreshold: settings.keepThreshold,
-      preserveRecentMessages: settings.preserveRecentMessages ?? 6,
-      maxStateTokens: settings.maxStateTokens,
-      maxRequestTokens: settings.maxRequestTokens,
-      truncateHeadChars: settings.truncateHeadChars,
-      allowDroppingCalls: settings.allowDroppingCalls ?? false,
-    });
+    /**
+     * Jev's window is 32k tokens, so a long session can never be shown whole:
+     * the core's last fitting stage throws ("history too large for Jev"), which
+     * is exactly what happened on a real 200k-token session — the case that
+     * needs reduction most. Scoring consecutive windows instead keeps it
+     * working; decisions are per tool call, so a window is a valid unit, and
+     * the trade is that Jev judges each call against its neighbourhood rather
+     * than the entire history.
+     */
+    const windows = splitIntoWindows(mapped, settings.maxWindowChars ?? DEFAULT_MAX_WINDOW_CHARS);
+    const keptAll: typeof mapped = [];
+    let dropped = 0;
 
-    const dropped = result.stats.resultsDropped + result.stats.callsDropped;
+    for (const window of windows) {
+      const sentinel = { role: 'user' as const, text: '(start of this stretch of history)', toolUses: [] };
+      const result = await compact([sentinel, ...window], cachingAsker, {
+        goal: settings.goal,
+        keepThreshold: settings.keepThreshold,
+        preserveRecentMessages: settings.preserveRecentMessages ?? 6,
+        maxStateTokens: settings.maxStateTokens,
+        maxRequestTokens: settings.maxRequestTokens,
+        truncateHeadChars: settings.truncateHeadChars,
+        allowDroppingCalls: settings.allowDroppingCalls ?? false,
+      });
+      dropped += result.stats.resultsDropped + result.stats.callsDropped;
+      keptAll.push(...result.messages.filter((message) => message !== sentinel));
+    }
+
     settings.onStats?.({
       before,
-      after: transcriptChars(result.messages.filter((m) => m !== sentinel)),
+      after: transcriptChars(keptAll),
       asks: cachingAsker.asks,
       cached: cachingAsker.answered,
       dropped,
+      windows: windows.length,
     });
     if (dropped === 0) return undefined;
 
-    return rewriteOmpMessages(messages, result.messages, {
+    return rewriteOmpMessages(messages, keptAll, {
       ...settings.spill,
       headChars: settings.truncateHeadChars ?? settings.spill?.headChars,
     });
   };
+}
+
+/** Roughly 15k tokens of state per window, inside Jev's 32k window. */
+export const DEFAULT_MAX_WINDOW_CHARS = 60_000;
+
+/**
+ * Splits history into consecutive windows without separating a tool call from
+ * its result: a window boundary only lands where the next message starts a new
+ * assistant turn, so pairing by id still resolves inside one window.
+ */
+export function splitIntoWindows<T extends { role: string; toolResults?: unknown[] }>(
+  messages: readonly T[],
+  maxChars: number,
+): T[][] {
+  const windows: T[][] = [];
+  let current: T[] = [];
+  let size = 0;
+  for (const message of messages) {
+    const chars = JSON.stringify(message).length;
+    const wouldSplitPair = message.role === 'user' && (message.toolResults?.length ?? 0) > 0;
+    if (current.length > 0 && size + chars > maxChars && !wouldSplitPair) {
+      windows.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(message);
+    size += chars;
+  }
+  if (current.length > 0) windows.push(current);
+  return windows;
 }
 
 /**
