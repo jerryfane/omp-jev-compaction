@@ -1,0 +1,36 @@
+{
+  "name": "omp-jev-compaction",
+  "version": "0.1.0",
+  "description": "Verbatim, Jev-scored context compaction for omp, over TypeSafe or OpenRouter.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/hook.d.ts",
+      "import": "./dist/hook.js"
+    },
+    "./asker": {
+      "types": "./dist/asker.d.ts",
+      "import": "./dist/asker.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:live": "JEV_LIVE=1 vitest run tests/live.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

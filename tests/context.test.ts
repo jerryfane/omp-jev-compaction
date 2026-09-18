@@ -1,0 +1,108 @@
+import { describe, expect, it } from 'vitest';
+import { CachingAsker, createContextReducer, rewriteOmpMessages } from '../src/context.js';
+import type { OmpMessage } from '../src/map.js';
+import type { JevAnswer, JevAsker, JevQuestions, JevState } from '../src/vendor/fast-jev/types.js';
+
+function countingAsker(overrides: Record<string, number> = {}, fallback = 0.9) {
+  const asker: JevAsker & { calls: number; asked: string[] } = {
+    calls: 0,
+    asked: [],
+    async ask(_state: JevState, questions: JevQuestions) {
+      asker.calls += 1;
+      const answers: Record<string, JevAnswer> = {};
+      for (const name of Object.keys(questions)) {
+        asker.asked.push(name);
+        answers[name] = { type: 'noul', noul: overrides[name] ?? fallback };
+      }
+      return { answers };
+    },
+  };
+  return asker;
+}
+
+function bigTranscript(size = 30_000): OmpMessage[] {
+  return [
+    { role: 'user', content: 'read the log and find the failing test' },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'reading' },
+        { type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'test.log' } },
+      ],
+    },
+    { role: 'toolResult', toolCallId: 'c1', toolName: 'read', content: [{ type: 'text', text: 'L'.repeat(size) }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'the failing test is parsePort' }] },
+    { role: 'user', content: 'fix it' },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'editing' },
+        { type: 'toolCall', id: 'c2', name: 'edit', arguments: { path: 'src/config.ts' } },
+      ],
+    },
+    { role: 'toolResult', toolCallId: 'c2', toolName: 'edit', content: [{ type: 'text', text: 'edited 1 line' }] },
+  ];
+}
+
+describe('context reducer', () => {
+  it('leaves a small context untouched without asking anything', async () => {
+    const asker = countingAsker();
+    const reduce = createContextReducer(asker, { minChars: 1_000_000 });
+    expect(await reduce(bigTranscript())).toBeUndefined();
+    expect(asker.calls).toBe(0);
+  });
+
+  it('drops a stale result and keeps every other message object by reference', async () => {
+    const asker = countingAsker({ result_t1: 0.05 });
+    const source = bigTranscript();
+    const reduce = createContextReducer(asker, { minChars: 1000, preserveRecentMessages: 1 });
+    const out = await reduce(source);
+    expect(out).toBeDefined();
+
+    const droppedResult = out!.find((m) => (m as { toolCallId?: string }).toolCallId === 'c1') as {
+      content: { text: string }[];
+    };
+    // A dropped result keeps a short head plus a recoverable note, not the payload.
+    expect(droppedResult.content[0].text.length).toBeLessThan(600);
+    expect(droppedResult.content[0].text).toContain('re-run the tool');
+    expect(out![0]).toBe(source[0]);
+    expect(out![3]).toBe(source[3]);
+    expect(out!.length).toBe(source.length);
+  });
+
+  it('returns undefined when Jev keeps everything', async () => {
+    const reduce = createContextReducer(countingAsker({}, 0.99), { minChars: 1000, preserveRecentMessages: 1 });
+    expect(await reduce(bigTranscript())).toBeUndefined();
+  });
+
+  it('asks once per call and serves later turns from cache', async () => {
+    const asker = countingAsker({ result_t1: 0.05 });
+    const cached = new CachingAsker(asker);
+    const reduce = createContextReducer(cached, { minChars: 1000, preserveRecentMessages: 1 });
+    await reduce(bigTranscript());
+    const asksAfterFirst = asker.calls;
+    await reduce(bigTranscript());
+    expect(asker.calls).toBe(asksAfterFirst);
+    expect(cached.answered).toBeGreaterThan(0);
+  });
+});
+
+describe('rewriteOmpMessages', () => {
+  it('marks a dropped call so the pairing still resolves', () => {
+    const source: OmpMessage[] = [
+      { role: 'toolResult', toolCallId: 'gone', toolName: 'read', content: [{ type: 'text', text: 'payload' }] },
+    ];
+    const out = rewriteOmpMessages(source, [{ toolUses: [], toolResults: [] }]);
+    expect((out[0] as { content: { text: string }[] }).content[0].text).toContain('re-run the tool');
+  });
+
+  it('passes an unchanged result through untouched', () => {
+    const source: OmpMessage[] = [
+      { role: 'toolResult', toolCallId: 'keep', toolName: 'read', content: [{ type: 'text', text: 'payload' }] },
+    ];
+    const out = rewriteOmpMessages(source, [
+      { toolUses: [{ tool_use_id: 'keep' }], toolResults: [{ tool_use_id: 'keep', text: 'payload' }] },
+    ]);
+    expect(out[0]).toBe(source[0]);
+  });
+});
