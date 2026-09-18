@@ -23,6 +23,8 @@ export interface OmpCompactionPreparation {
 }
 
 export interface JevHookSettings extends CompactOptions {
+  /** Park dropped payloads on disk so they can be read back. Default on. */
+  spill?: { enabled?: boolean; dir?: string; headChars?: number };
   /** Turn on continuous per-request reduction without an environment variable. */
   context?: boolean;
   provider?: JevProviderName;
@@ -69,6 +71,10 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
     minReductionRatio: numberFrom(env.OMP_JEV_MIN_REDUCTION, DEFAULTS.minReductionRatio),
     // Opt in explicitly to let a low score remove the call record itself.
     allowDroppingCalls: env.OMP_JEV_ALLOW_DROPPING_CALLS === '1',
+    spill: {
+      enabled: env.OMP_JEV_SPILL !== '0',
+      dir: env.OMP_JEV_SPILL_DIR?.trim() || undefined,
+    },
     timeoutMs: numberFrom(env.OMP_JEV_TIMEOUT_MS, DEFAULTS.timeoutMs),
   };
 }

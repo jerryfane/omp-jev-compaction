@@ -37,11 +37,39 @@ tokens.
 
 ## Install
 
+As an omp plugin, which is one command and needs no flags afterwards:
+
 ```sh
-git clone https://github.com/jerryfane/omp-jev-compaction /repos/omp-jev-compaction
-cd /repos/omp-jev-compaction && npm install && npm run build
-omp --hook /repos/omp-jev-compaction/dist/hook.js
+omp plugin install jerryfane/omp-jev-compaction     # or a local path
+OMP_JEV_CONTEXT=1 OMP_JEV_KEEP_THRESHOLD=0.2 omp
 ```
+
+`npm` runs `prepare`, so a git install builds `dist/` itself. Verify with
+`omp plugin list`, and confirm it is working with:
+
+```sh
+grep "jev context" ~/.omp/logs/omp.$(date +%F).*.log | tail -3
+# jev context: 33906->27067 chars, dropped=5, asks=4, cacheHits=20
+```
+
+For a single directory instead of everywhere, drop a file at
+`.omp/hooks/pre/jev.ts` that calls the hook with `{ context: true }`.
+
+The manifest declares settings with environment fallbacks. Values are read
+from the environment today; reading omp's own plugin settings store is not
+wired up yet.
+
+## Dropped output is recoverable
+
+A dropped payload is written to `~/.omp/jev-spill/<hash>.txt` and the
+replacement text names that file, so the agent gets it back with one `read`
+instead of re-running the tool. Identical payloads share one file.
+
+This matters because reduction does lose facts. Measured with
+`scripts/recall.ts`: full context answered **100%** of planted questions,
+reduced context **63-75%**. With parking on, the misses are **recoverable: 0
+permanent losses** across both thresholds tested. Switch it off with
+`OMP_JEV_SPILL=0` and the misses become permanent.
 
 ## The two integration points
 

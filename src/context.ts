@@ -1,4 +1,5 @@
 import { mapOmpMessages, type OmpMessage } from './map.js';
+import { isSpillNotice, spillPayload, type SpillOptions } from './spill.js';
 import { transcriptChars } from './render.js';
 import { compact } from './vendor/fast-jev/compact.js';
 import type { CompactOptions, JevAnswer, JevAsker, JevQuestions, JevState } from './vendor/fast-jev/types.js';
@@ -42,6 +43,8 @@ export class CachingAsker implements JevAsker {
 }
 
 export interface ContextReducerSettings extends CompactOptions {
+  /** Park dropped payloads on disk and name the file. Default on. */
+  spill?: SpillOptions & { enabled?: boolean };
   /**
    * Only reduce once the context is genuinely big. Below this the round trip
    * costs more than it saves, and a short session needs no help.
@@ -95,7 +98,10 @@ export function createContextReducer(asker: JevAsker, settings: ContextReducerSe
     });
     if (dropped === 0) return undefined;
 
-    return rewriteOmpMessages(messages, result.messages);
+    return rewriteOmpMessages(messages, result.messages, {
+      ...settings.spill,
+      headChars: settings.truncateHeadChars ?? settings.spill?.headChars,
+    });
   };
 }
 
@@ -104,11 +110,14 @@ export function createContextReducer(asker: JevAsker, settings: ContextReducerSe
  *
  * Only tool results are rewritten, and only the ones Jev let go; every other
  * message object is passed through by reference, so text, thinking blocks and
- * provider metadata stay exactly as omp built them.
+ * provider metadata stay exactly as omp built them. A rewritten result parks
+ * its full payload on disk and names the file, so the reduction is reversible
+ * with one `read` instead of re-running the tool.
  */
 export function rewriteOmpMessages(
   original: readonly OmpMessage[],
   kept: readonly { toolResults?: { tool_use_id: string; text: string }[]; toolUses: { tool_use_id: string }[] }[],
+  spill: SpillOptions & { enabled?: boolean } = {},
 ): OmpMessage[] {
   const keptResultText = new Map<string, string>();
   const keptCallIds = new Set<string>();
@@ -116,6 +125,15 @@ export function rewriteOmpMessages(
     for (const use of message.toolUses) keptCallIds.add(use.tool_use_id);
     for (const result of message.toolResults ?? []) keptResultText.set(result.tool_use_id, result.text);
   }
+  const recover = (text: string, fallback: string): string => {
+    if (spill.enabled === false || !text || isSpillNotice(text)) return fallback;
+    try {
+      return spillPayload(text, spill).notice;
+    } catch {
+      // A read-only or full disk must not cost the turn; keep the plain note.
+      return fallback;
+    }
+  };
 
   const out: OmpMessage[] = [];
   for (const message of original) {
@@ -124,18 +142,21 @@ export function rewriteOmpMessages(
       continue;
     }
     const result = message as { role: 'toolResult'; toolCallId: string; content: { type: string; text?: string }[] };
+    const current = result.content.map((part) => part.text ?? '').join('\n');
     const replacement = keptResultText.get(result.toolCallId);
     if (replacement === undefined) {
       // The call itself was dropped; omp still needs a result for the pairing.
-      out.push({ ...result, content: [{ type: 'text', text: '[jev: result dropped; re-run the tool if needed]' }] });
+      out.push({
+        ...result,
+        content: [{ type: 'text', text: recover(current, '[jev: result dropped; re-run the tool if needed]') }],
+      });
       continue;
     }
-    const current = result.content.map((part) => part.text ?? '').join('\n');
     if (current === replacement) {
       out.push(message);
       continue;
     }
-    out.push({ ...result, content: [{ type: 'text', text: replacement }] });
+    out.push({ ...result, content: [{ type: 'text', text: recover(current, replacement) }] });
   }
   return out;
 }

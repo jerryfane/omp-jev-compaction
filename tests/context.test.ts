@@ -62,9 +62,9 @@ describe('context reducer', () => {
     const droppedResult = out!.find((m) => (m as { toolCallId?: string }).toolCallId === 'c1') as {
       content: { text: string }[];
     };
-    // A dropped result keeps a short head plus a recoverable note, not the payload.
-    expect(droppedResult.content[0].text.length).toBeLessThan(600);
-    expect(droppedResult.content[0].text).toContain('re-run the tool');
+    // A dropped result keeps a short head plus a pointer to the parked payload.
+    expect(droppedResult.content[0].text.length).toBeLessThan(700);
+    expect(droppedResult.content[0].text).toMatch(/read \S+\.txt/);
     expect(out![0]).toBe(source[0]);
     expect(out![3]).toBe(source[3]);
     expect(out!.length).toBe(source.length);
@@ -88,12 +88,23 @@ describe('context reducer', () => {
 });
 
 describe('rewriteOmpMessages', () => {
-  it('marks a dropped call so the pairing still resolves', () => {
+  it('keeps a tiny dropped payload inline, since parking it would save nothing', () => {
     const source: OmpMessage[] = [
       { role: 'toolResult', toolCallId: 'gone', toolName: 'read', content: [{ type: 'text', text: 'payload' }] },
     ];
     const out = rewriteOmpMessages(source, [{ toolUses: [], toolResults: [] }]);
-    expect((out[0] as { content: { text: string }[] }).content[0].text).toContain('re-run the tool');
+    expect((out[0] as { content: { text: string }[] }).content[0].text).toContain('payload');
+  });
+
+  it('parks a large dropped payload and points at the file', () => {
+    const big = 'E'.repeat(5000);
+    const source: OmpMessage[] = [
+      { role: 'toolResult', toolCallId: 'gone', toolName: 'read', content: [{ type: 'text', text: big }] },
+    ];
+    const out = rewriteOmpMessages(source, [{ toolUses: [], toolResults: [] }]);
+    const text = (out[0] as { content: { text: string }[] }).content[0].text;
+    expect(text).toMatch(/read \S+\.txt/);
+    expect(text.length).toBeLessThan(big.length);
   });
 
   it('passes an unchanged result through untouched', () => {

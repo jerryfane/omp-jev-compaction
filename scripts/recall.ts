@@ -9,7 +9,8 @@
  */
 import { writeFileSync } from 'node:fs';
 import { DualJevClient } from '../src/asker.js';
-import { CachingAsker } from '../src/context.js';
+import { CachingAsker, rewriteOmpMessages } from '../src/context.js';
+import { readFileSync } from 'node:fs';
 import { mapOmpMessages, type OmpMessage } from '../src/map.js';
 import { transcriptChars } from '../src/render.js';
 import { compact } from '../src/vendor/fast-jev/compact.js';
@@ -119,13 +120,27 @@ async function score(context: string, label: string) {
   for (const probe of probes) {
     const reply = await askModel(context, probe.question);
     const correct = reply.toLowerCase().includes(probe.answer.toLowerCase());
-    results.push({ q: probe.question, expect: probe.answer, reply, correct, loadBearing: probe.loadBearing });
+    results.push({ q: probe.question, expect: probe.answer, reply, correct, loadBearing: probe.loadBearing, recoverable: false });
   }
   const bearing = results.filter((r) => r.loadBearing);
   const rest = results.filter((r) => !r.loadBearing);
   const pct = (rows: typeof results) => (rows.length ? Math.round((rows.filter((r) => r.correct).length / rows.length) * 100) : 0);
+  // A miss that is still on disk is repairable: the agent can read the file.
+  for (const row of results) {
+    if (row.correct) continue;
+    const paths = [...context.matchAll(/read (\S+\.txt)/g)].map((m) => m[1]);
+    row.recoverable = paths.some((path) => {
+      try {
+        return readFileSync(path, 'utf8').includes(row.expect);
+      } catch {
+        return false;
+      }
+    });
+  }
   const summary = {
     label,
+    recoverableMisses: results.filter((r) => !r.correct && r.recoverable).length,
+    permanentMisses: results.filter((r) => !r.correct && !r.recoverable).length,
     contextChars: context.length,
     overallRecall: pct(results),
     loadBearingRecall: pct(bearing),
@@ -149,7 +164,9 @@ for (const keepThreshold of thresholds) {
     preserveRecentMessages: 6,
   });
   const kept = result.messages.filter((m) => m !== sentinel);
-  const run = await score(serialize(kept), `reduced at ${keepThreshold}`);
+  // Same path omp takes: dropped payloads are parked on disk with a pointer.
+  const rewritten = mapOmpMessages(rewriteOmpMessages(source, kept, { dir: '/tmp/jev-recall-spill' })).messages;
+  const run = await score(serialize(rewritten), `reduced at ${keepThreshold}`);
   runs.push({
     ...run,
     summary: {

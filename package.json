@@ -26,7 +26,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:live": "JEV_LIVE=1 vitest run tests/live.test.ts"
+    "test:live": "JEV_LIVE=1 vitest run tests/live.test.ts",
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -35,5 +36,59 @@
   },
   "dependencies": {
     "tsx": "^4.23.13"
+  },
+  "omp": {
+    "name": "omp-jev-compaction",
+    "version": "0.1.0",
+    "description": "Verbatim context reduction scored by Jev, over TypeSafe or OpenRouter",
+    "extensions": [
+      "dist/hook.js"
+    ],
+    "settings": {
+      "context": {
+        "type": "boolean",
+        "default": true,
+        "description": "Reduce the context of every request (the mode that pays)",
+        "env": "OMP_JEV_CONTEXT"
+      },
+      "keepThreshold": {
+        "type": "number",
+        "default": 0.2,
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "description": "Minimum probability for a tool output to stay. 0.2 is where Jev still discriminates",
+        "env": "OMP_JEV_KEEP_THRESHOLD"
+      },
+      "minChars": {
+        "type": "number",
+        "default": 150000,
+        "description": "Leave contexts smaller than this alone",
+        "env": "OMP_JEV_MIN_CHARS"
+      },
+      "spill": {
+        "type": "boolean",
+        "default": true,
+        "description": "Park dropped output on disk so it can be read back",
+        "env": "OMP_JEV_SPILL"
+      },
+      "allowDroppingCalls": {
+        "type": "boolean",
+        "default": false,
+        "description": "Let a low score erase the call record itself, not just its output",
+        "env": "OMP_JEV_ALLOW_DROPPING_CALLS"
+      },
+      "provider": {
+        "type": "enum",
+        "values": [
+          "auto",
+          "typesafe",
+          "openrouter"
+        ],
+        "default": "auto",
+        "description": "Which decision endpoint to use",
+        "env": "OMP_JEV_PROVIDER"
+      }
+    }
   }
 }
