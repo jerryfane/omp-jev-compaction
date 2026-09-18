@@ -75,6 +75,62 @@ describe('context reducer', () => {
     expect(await reduce(bigTranscript())).toBeUndefined();
   });
 
+  it('does not reuse answers for the same local call id in different windows', async () => {
+    const asker: JevAsker & { calls: number } = {
+      calls: 0,
+      async ask(state: JevState, questions: JevQuestions) {
+        asker.calls += 1;
+        const keep = JSON.stringify(state).includes('second.txt') ? 0.99 : 0.01;
+        return {
+          answers: Object.fromEntries(
+            Object.keys(questions).map((name) => [name, { type: 'noul' as const, noul: keep }]),
+          ),
+        };
+      },
+    };
+    const source: OmpMessage[] = [
+      { role: 'user', content: 'compare two files' },
+      {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'first', name: 'read', arguments: { path: 'first.txt' } }],
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'first',
+        toolName: 'read',
+        content: [{ type: 'text', text: 'A'.repeat(2_000) }],
+      },
+      {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'second', name: 'read', arguments: { path: 'second.txt' } }],
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'second',
+        toolName: 'read',
+        content: [{ type: 'text', text: 'B'.repeat(2_000) }],
+      },
+    ];
+
+    const reduce = createContextReducer(new CachingAsker(asker), {
+      minChars: 1,
+      maxWindowChars: 1_000,
+      preserveRecentMessages: 0,
+      spill: { enabled: false },
+    });
+    const out = await reduce(source);
+
+    expect(asker.calls).toBe(2);
+    const first = out!.find((message) => (message as { toolCallId?: string }).toolCallId === 'first') as {
+      content: { text: string }[];
+    };
+    const second = out!.find((message) => (message as { toolCallId?: string }).toolCallId === 'second') as {
+      content: { text: string }[];
+    };
+    expect(first.content[0].text).toContain('[fast-jev-compaction truncated');
+    expect(second.content[0].text).toBe('B'.repeat(2_000));
+  });
+
   it('asks once and then reuses the decisions without asking again', async () => {
     const asker = countingAsker({ result_t1: 0.05 });
     const reduce = createContextReducer(new CachingAsker(asker), { minChars: 1000, preserveRecentMessages: 1 });
