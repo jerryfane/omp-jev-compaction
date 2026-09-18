@@ -280,11 +280,15 @@ export async function compact(
 
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let batches: ToolCall[][] = [];
+  let unscored = 0;
   const answers = new Map<string, CallAnswer>();
   if (candidates.length > 0) {
     const state = fitState(messages, calls, resolved);
     fitted = state;
-    batches = batchCalls(candidates, state.tokens, resolved);
+    // A call the fitted state had to leave out cannot be judged from it.
+    const scorable = candidates.filter((call) => state.representedCalls.has(call.id));
+    unscored = candidates.length - scorable.length;
+    batches = scorable.length > 0 ? batchCalls(scorable, state.tokens, resolved) : [];
     const answered = await Promise.all(
       batches.map((batch) => askBatch(asker, state.state, batch)),
     );
@@ -316,6 +320,7 @@ export async function compact(
       stateTokens: fitted.tokens,
       stateStage: fitted.stage,
       requests: batches.length,
+      unscored,
       ms: Date.now() - started,
     },
   };
