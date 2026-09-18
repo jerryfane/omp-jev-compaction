@@ -20,6 +20,13 @@ mapping, the two integration points, and the tests.
 Re-sync the vendored core by copying `src/{compact,state,types,request}.ts`
 from upstream and updating `src/vendor/fast-jev/UPSTREAM_COMMIT`.
 
+## One caution before fleet-wide use
+
+Every reduction sends the conversation state (tool names, inputs, and message
+text; tool *outputs* are replaced by size notes first) to the decision
+endpoint. On a shared machine that is one more place your work travels to.
+Cost is negligible, about $0.0005 per pass, and decisions are cached.
+
 ## Providers
 
 | Provider | Endpoint | Model | Key |
@@ -41,8 +48,13 @@ As an omp plugin, which is one command and needs no flags afterwards:
 
 ```sh
 omp plugin install jerryfane/omp-jev-compaction     # or a local path
-OMP_JEV_CONTEXT=1 OMP_JEV_KEEP_THRESHOLD=0.2 omp
+omp                                                  # that is all
 ```
+
+Installing is the opt-in, so continuous reduction is **on by default** with
+threshold `0.2`, a 150,000-character floor and payload parking enabled. No
+environment variables are needed. Turn it off again with `OMP_JEV_CONTEXT=0`
+or `omp plugin disable omp-jev-compaction`.
 
 `npm` runs `prepare`, so a git install builds `dist/` itself. Verify with
 `omp plugin list`, and confirm it is working with:
@@ -102,12 +114,12 @@ All optional, read from the environment.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OMP_JEV_CONTEXT` | off | `1` enables continuous per-request reduction |
-| `OMP_JEV_MIN_CHARS` | `200000` | Only reduce a context at least this large |
+| `OMP_JEV_CONTEXT` | **on** | `0` disables continuous per-request reduction |
+| `OMP_JEV_MIN_CHARS` | `150000` | Only reduce a context at least this large |
 | `OMP_JEV_PROVIDER` | auto | `typesafe` or `openrouter` |
 | `OMP_JEV_MODEL` | per provider | Model id override |
 | `OMP_JEV_BASE_URL` | per provider | Endpoint override |
-| `OMP_JEV_KEEP_THRESHOLD` | `0.5` | Minimum probability for a call or result to stay |
+| `OMP_JEV_KEEP_THRESHOLD` | `0.2` | Minimum probability for a call or result to stay |
 | `OMP_JEV_ALLOW_DROPPING_CALLS` | off | `1` lets a low score erase the whole call, not just its output |
 | `OMP_JEV_PRESERVE_RECENT` | `0` for compaction, `6` for context | Newest messages never touched |
 | `OMP_JEV_MIN_REDUCTION` | `0.25` | Saving required before replacing omp's compaction |

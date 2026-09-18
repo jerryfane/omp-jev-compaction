@@ -141,16 +141,25 @@ describe('jevCompaction', () => {
 });
 
 describe('hook wiring', () => {
+  /**
+   * The hook registers two handlers (compaction and context), so they are kept
+   * per event name; a single slot silently tested the wrong one.
+   */
   function register() {
-    let handler: ((event: unknown, ctx?: unknown) => Promise<unknown>) | undefined;
+    const handlers = new Map<string, (event: unknown, ctx?: unknown) => Promise<unknown>>();
     const warnings: string[] = [];
     const pi = {
-      on: (_event: string, fn: typeof handler) => {
-        handler = fn;
+      on: (event: string, fn: (event: unknown, ctx?: unknown) => Promise<unknown>) => {
+        handlers.set(event, fn);
       },
       logger: { info: () => {}, warn: (message: unknown) => warnings.push(String(message)) },
     };
-    return { pi, warnings, run: (event: unknown) => handler!(event, { ui: { notify: () => {} } }) };
+    return {
+      pi,
+      warnings,
+      events: handlers,
+      run: (event: unknown) => handlers.get('session_before_compact')!(event, { ui: { notify: () => {} } }),
+    };
   }
 
   it('returns a compaction through the registered handler', async () => {
@@ -204,6 +213,6 @@ describe('settingsFromEnv', () => {
   it('ignores a bogus provider and bad numbers', () => {
     const settings = settingsFromEnv({ OMP_JEV_PROVIDER: 'nonsense', OMP_JEV_KEEP_THRESHOLD: 'abc' });
     expect(settings.provider).toBeUndefined();
-    expect(settings.keepThreshold).toBe(0.5);
+    expect(settings.keepThreshold).toBe(0.2);
   });
 });

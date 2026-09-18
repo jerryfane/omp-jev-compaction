@@ -53,7 +53,7 @@ export interface ContextReducerSettings extends CompactOptions {
   onStats?: (stats: { before: number; after: number; asks: number; cached: number; dropped: number }) => void;
 }
 
-export const DEFAULT_MIN_CHARS = 200_000;
+export const DEFAULT_MIN_CHARS = 150_000;
 
 /**
  * Reduces one request's messages, or returns undefined to leave them alone

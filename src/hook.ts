@@ -41,7 +41,11 @@ export interface JevHookSettings extends CompactOptions {
   minReductionRatio?: number;
 }
 const DEFAULTS = {
-  keepThreshold: 0.5,
+  /**
+   * 0.2, not the upstream 0.5. Measured on real sessions, Jev's scores sit
+   * between 0.2 and 0.4, so 0.5 keeps nothing and stops discriminating.
+   */
+  keepThreshold: 0.2,
   /**
    * Zero, unlike the library's own default of 6. omp hands the hook only the
    * region it is already going to discard and protects the tail separately as
@@ -63,6 +67,12 @@ function numberFrom(value: unknown, fallback: number): number {
 export function settingsFromEnv(env: Record<string, string | undefined> = process.env): JevHookSettings {
   const provider = env.OMP_JEV_PROVIDER?.trim().toLowerCase();
   return {
+    /**
+     * On unless switched off. A plugin install is an explicit choice to use
+     * this, and requiring an extra environment variable on every seat was the
+     * main thing making fleet deployment awkward.
+     */
+    context: env.OMP_JEV_CONTEXT !== '0',
     provider: provider === 'typesafe' || provider === 'openrouter' ? provider : undefined,
     model: env.OMP_JEV_MODEL?.trim() || undefined,
     baseUrl: env.OMP_JEV_BASE_URL?.trim() || undefined,
@@ -221,8 +231,8 @@ export default function hook(pi: OmpHookApi, clientOptions: JevHookOptions = {})
   // `session_before_compact` only sees a region omp has often already pruned.
   // Enabled by the env switch, or explicitly by a caller that constructs the
   // hook itself (a per-directory `.omp/hooks/pre/*.ts` file, for instance).
-  const contextEnabled =
-    clientOptions.context === true || (clientOptions.env ?? process.env).OMP_JEV_CONTEXT === '1';
+  const envSettings = settingsFromEnv(clientOptions.env ?? process.env);
+  const contextEnabled = clientOptions.context ?? envSettings.context ?? true;
   if (contextEnabled) {
     let reducer: ContextReducer | undefined;
     pi.on('context', async (event) => {
