@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   CompactionState,
   FittedState,
@@ -6,6 +7,7 @@ import type {
   ResolvedCompactOptions,
   ToolCall,
   ToolResult,
+  ToolUse,
 } from './types.js';
 
 export const STATE_CONTEXT =
@@ -59,6 +61,24 @@ export function isPinned(
  * Pairs every tool_use with its tool_result by `tool_use_id`. Calls without a
  * result are not candidates (there is nothing to drop yet).
  */
+function callCacheKey(use: ToolUse, result: ToolResult): string {
+  const hash = createHash('sha256');
+  hash.update(use.tool_use_id);
+  hash.update('\0');
+  hash.update(use.tool);
+  hash.update('\0');
+  try {
+    hash.update(JSON.stringify(use.input));
+  } catch {
+    hash.update(String(use.input));
+  }
+  hash.update('\0');
+  hash.update(result.text);
+  hash.update('\0');
+  hash.update(result.isError ? 'error' : 'success');
+  return hash.digest('hex');
+}
+
 export function collectToolCalls(
   messages: readonly Message[],
   preserveRecentMessages: number,
@@ -83,6 +103,7 @@ export function collectToolCalls(
         resultIndex: found.index,
         resultChars: found.result.text.length,
         isError: found.result.isError ?? false,
+        cacheKey: callCacheKey(tool, found.result),
         pinned:
           isPinned(callIndex, messages.length, preserveRecentMessages) ||
           isPinned(found.index, messages.length, preserveRecentMessages),

@@ -45,6 +45,8 @@ export interface ToolCall {
   isError: boolean;
   /** In the first or the newest preserved messages; never a candidate. */
   pinned: boolean;
+  /** Digest of the original call, input, result, and error state. */
+  cacheKey: string;
 }
 
 export interface CallAnswer {
@@ -213,7 +215,10 @@ export interface JevResponse {
   [key: string]: unknown;
 }
 
+/** Cache identities are internal metadata and are never sent to Jev. */
+export type JevCacheKeys = Readonly<Record<string, string>>;
+
 /** Anything that can answer Jev questions: `JevClient`, or a host-provided adapter. */
 export interface JevAsker {
-  ask(state: JevState, questions: JevQuestions): Promise<JevResponse>;
+  ask(state: JevState, questions: JevQuestions, cacheKeys?: JevCacheKeys): Promise<JevResponse>;
 }

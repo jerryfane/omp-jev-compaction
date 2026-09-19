@@ -1,41 +1,67 @@
+import { createHash } from 'node:crypto';
 import { judgeCache, type CacheVerdict } from './cache-guard.js';
 import { mapOmpMessages, type OmpMessage } from './map.js';
 import { isSpillNotice, spillPayload, type SpillOptions } from './spill.js';
 import { transcriptChars } from './render.js';
 import { compact } from './vendor/fast-jev/compact.js';
-import type { CompactOptions, JevAnswer, JevAsker, JevQuestions, JevState } from './vendor/fast-jev/types.js';
+import type {
+  CompactOptions,
+  JevAnswer,
+  JevAsker,
+  JevCacheKeys,
+  JevQuestions,
+  JevState,
+} from './vendor/fast-jev/types.js';
+
+function digest(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value) ?? 'undefined').digest('hex');
+}
 
 /**
- * Answers repeated questions from memory.
+ * Reuses answers only while the complete Jev state is unchanged and the
+ * original tool-call content has the same identity.
  *
- * The context hook runs on every request, but a judgement about one tool call
- * rarely changes between turns, and each ask costs a round trip. Caching by
- * question name means only newly seen calls reach the provider.
+ * Question names such as `call_t1` are temporary: every compaction and every
+ * window numbers calls from `t1` again. They must never be cache keys by
+ * themselves. A state change clears the cache, which also bounds memory and
+ * prevents decisions crossing session switches, rewinds, or changed goals.
  */
 export class CachingAsker implements JevAsker {
   readonly cache = new Map<string, JevAnswer>();
   asks = 0;
   answered = 0;
+  private stateDigest: string | undefined;
 
   constructor(private readonly inner: JevAsker) {}
 
-  async ask(state: JevState, questions: JevQuestions) {
+  async ask(state: JevState, questions: JevQuestions, cacheKeys: JevCacheKeys = {}) {
+    const nextStateDigest = digest(state);
+    if (this.stateDigest !== nextStateDigest) {
+      this.cache.clear();
+      this.stateDigest = nextStateDigest;
+    }
+
     const missing: JevQuestions = {};
+    const missingKeys: Record<string, string> = {};
     const answers: Record<string, JevAnswer> = {};
     for (const [name, question] of Object.entries(questions)) {
-      const cached = this.cache.get(name);
+      const identity = cacheKeys[name] ?? digest(question);
+      const key = `${name}:${identity}`;
+      const cached = this.cache.get(key);
       if (cached) {
         answers[name] = cached;
         this.answered += 1;
       } else {
         missing[name] = question;
+        missingKeys[name] = identity;
       }
     }
     if (Object.keys(missing).length > 0) {
       this.asks += 1;
-      const fresh = await this.inner.ask(state, missing);
+      const fresh = await this.inner.ask(state, missing, missingKeys);
       for (const [name, answer] of Object.entries(fresh.answers)) {
-        this.cache.set(name, answer);
+        const identity = missingKeys[name] ?? digest(missing[name]);
+        this.cache.set(`${name}:${identity}`, answer);
         answers[name] = answer;
       }
     }
