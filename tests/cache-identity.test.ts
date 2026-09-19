@@ -106,6 +106,79 @@ describe('CachingAsker identity', () => {
     expect(inner.calls).toBe(2);
   });
 
+  it('keeps state identities separate when asks overlap', async () => {
+    let calls = 0;
+    let releaseA: ((answer: { answers: { call_t1: { type: 'noul'; noul: number } } }) => void) | undefined;
+    const answerA = new Promise<{ answers: { call_t1: { type: 'noul'; noul: number } } }>(
+      (resolve) => {
+        releaseA = resolve;
+      },
+    );
+    const inner: JevAsker = {
+      async ask(current) {
+        calls += 1;
+        if (current.goal === 'state A') return answerA;
+        return { answers: { call_t1: { type: 'noul', noul: 0.95 } } };
+      },
+    };
+    const cached = new CachingAsker(inner);
+    const keys = { call_t1: 'same-content:call' };
+
+    const pendingA = cached.ask(state('same history', 'state A'), questions, keys);
+    const firstB = await cached.ask(state('same history', 'state B'), questions, keys);
+    releaseA?.({ answers: { call_t1: { type: 'noul', noul: 0.05 } } });
+    await pendingA;
+    const secondB = await cached.ask(state('same history', 'state B'), questions, keys);
+
+    expect(firstB.answers.call_t1).toMatchObject({ noul: 0.95 });
+    expect(secondB.answers.call_t1).toMatchObject({ noul: 0.95 });
+    expect(calls).toBe(2);
+    expect(cached.answered).toBe(1);
+  });
+
+  it('reuses an exact state after another state is evaluated', async () => {
+    const inner = changingAsker();
+    const cached = new CachingAsker(inner);
+    const keys = { call_t1: 'same-content:call' };
+
+    const firstA = await cached.ask(state('history A'), questions, keys);
+    await cached.ask(state('history B'), questions, keys);
+    const secondA = await cached.ask(state('history A'), questions, keys);
+
+    expect(firstA.answers.call_t1).toMatchObject({ noul: 0.05 });
+    expect(secondA.answers.call_t1).toMatchObject({ noul: 0.05 });
+    expect(inner.calls).toBe(2);
+    expect(cached.answered).toBe(1);
+  });
+
+  it('bypasses caching when an adapter supplies a non-serializable state', async () => {
+    const inner = changingAsker();
+    const cached = new CachingAsker(inner);
+    const circular = state('circular') as JevState & { self?: unknown };
+    circular.self = circular;
+
+    await cached.ask(circular, questions, { call_t1: 'content:call' });
+    await cached.ask(circular, questions, { call_t1: 'content:call' });
+
+    expect(inner.calls).toBe(2);
+    expect(cached.cache.size).toBe(0);
+  });
+
+  it('bounds retained state entries with LRU eviction', async () => {
+    const inner = changingAsker();
+    const cached = new CachingAsker(inner, 2);
+    const keys = { call_t1: 'same-content:call' };
+
+    await cached.ask(state('history A'), questions, keys);
+    await cached.ask(state('history B'), questions, keys);
+    await cached.ask(state('history C'), questions, keys);
+    expect(cached.cache.size).toBe(2);
+
+    await cached.ask(state('history A'), questions, keys);
+    expect(inner.calls).toBe(4);
+    expect(cached.cache.size).toBe(2);
+  });
+
   it('distinguishes changed result text even when its length and state shape match', async () => {
     const firstMessages = transcript('service port 8471');
     const secondMessages = transcript('service port 9471');
