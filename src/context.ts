@@ -3,6 +3,7 @@ import { mapOmpMessages, type OmpMessage } from './map.js';
 import { isSpillNotice, spillPayload, type SpillOptions } from './spill.js';
 import { transcriptChars } from './render.js';
 import { compact } from './vendor/fast-jev/compact.js';
+import { collectToolCalls } from './vendor/fast-jev/state.js';
 import type { CompactOptions, JevAnswer, JevAsker, JevQuestions, JevState } from './vendor/fast-jev/types.js';
 
 /**
@@ -10,7 +11,8 @@ import type { CompactOptions, JevAnswer, JevAsker, JevQuestions, JevState } from
  *
  * The context hook runs on every request, but a judgement about one tool call
  * rarely changes between turns, and each ask costs a round trip. Caching by
- * question name means only newly seen calls reach the provider.
+ * question name within a stable scope means only newly seen calls reach the
+ * provider. Scopes keep compact's local ids such as `t1` from colliding.
  */
 export class CachingAsker implements JevAsker {
   readonly cache = new Map<string, JevAnswer>();
@@ -20,10 +22,21 @@ export class CachingAsker implements JevAsker {
   constructor(private readonly inner: JevAsker) {}
 
   async ask(state: JevState, questions: JevQuestions) {
+    return this.askWithScopes(new Map(), state, questions);
+  }
+
+  withScopes(scopes: ReadonlyMap<string, string>): JevAsker {
+    return {
+      ask: (state, questions) => this.askWithScopes(scopes, state, questions),
+    };
+  }
+
+  private async askWithScopes(scopes: ReadonlyMap<string, string>, state: JevState, questions: JevQuestions) {
     const missing: JevQuestions = {};
     const answers: Record<string, JevAnswer> = {};
+    const keyFor = (name: string): string => `${scopes.get(name) ?? ''}\u0000${name}`;
     for (const [name, question] of Object.entries(questions)) {
-      const cached = this.cache.get(name);
+      const cached = this.cache.get(keyFor(name));
       if (cached) {
         answers[name] = cached;
         this.answered += 1;
@@ -35,11 +48,30 @@ export class CachingAsker implements JevAsker {
       this.asks += 1;
       const fresh = await this.inner.ask(state, missing);
       for (const [name, answer] of Object.entries(fresh.answers)) {
-        this.cache.set(name, answer);
+        this.cache.set(keyFor(name), answer);
         answers[name] = answer;
       }
     }
     return { answers };
+  }
+}
+
+class ToolCallScopedAsker implements JevAsker {
+  private readonly scopes = new Map<string, string>();
+
+  constructor(
+    private readonly cache: CachingAsker,
+    messages: Parameters<typeof collectToolCalls>[0],
+    preserveRecentMessages: number,
+  ) {
+    for (const call of collectToolCalls(messages, preserveRecentMessages)) {
+      this.scopes.set(`call_${call.id}`, call.tool_use_id);
+      this.scopes.set(`result_${call.id}`, call.tool_use_id);
+    }
+  }
+
+  ask(state: JevState, questions: JevQuestions) {
+    return this.cache.withScopes(this.scopes).ask(state, questions);
   }
 }
 
@@ -163,7 +195,8 @@ export function createContextReducer(asker: JevAsker, settings: ContextReducerSe
     let dropped = 0;
     for (const window of windows) {
       const sentinel = { role: 'user' as const, text: '(start of this stretch of history)', toolUses: [] };
-      const result = await compact([sentinel, ...window], cachingAsker, {
+      const scopedAsker = new ToolCallScopedAsker(cachingAsker, [sentinel, ...window], settings.preserveRecentMessages ?? 6);
+      const result = await compact([sentinel, ...window], scopedAsker, {
         goal: settings.goal,
         keepThreshold: settings.keepThreshold,
         preserveRecentMessages: settings.preserveRecentMessages ?? 6,
