@@ -1,41 +1,98 @@
+import { createHash } from 'node:crypto';
 import { judgeCache, type CacheVerdict } from './cache-guard.js';
 import { mapOmpMessages, type OmpMessage } from './map.js';
 import { isSpillNotice, spillPayload, type SpillOptions } from './spill.js';
 import { transcriptChars } from './render.js';
 import { compact } from './vendor/fast-jev/compact.js';
-import type { CompactOptions, JevAnswer, JevAsker, JevQuestions, JevState } from './vendor/fast-jev/types.js';
+import type {
+  CompactOptions,
+  JevAnswer,
+  JevAsker,
+  JevCacheKeys,
+  JevQuestions,
+  JevState,
+} from './vendor/fast-jev/types.js';
+
+function digest(value: unknown): string | undefined {
+  try {
+    return createHash('sha256').update(JSON.stringify(value) ?? 'undefined').digest('hex');
+  } catch {
+    return undefined;
+  }
+}
 
 /**
- * Answers repeated questions from memory.
+ * Reuses answers only for an exact Jev state and original tool-call identity.
  *
- * The context hook runs on every request, but a judgement about one tool call
- * rarely changes between turns, and each ask costs a round trip. Caching by
- * question name means only newly seen calls reach the provider.
+ * Question names such as `call_t1` are temporary: every compaction and every
+ * window numbers calls from `t1` again. Every key therefore includes the
+ * captured state digest and original call/result digest. The state digest stays
+ * in the key across the async request, so overlapping states cannot overwrite
+ * one another. A bounded LRU keeps valid cross-window reuse without unbounded
+ * process memory. Non-serializable adapter states bypass caching.
  */
 export class CachingAsker implements JevAsker {
   readonly cache = new Map<string, JevAnswer>();
   asks = 0;
   answered = 0;
 
-  constructor(private readonly inner: JevAsker) {}
+  constructor(
+    private readonly inner: JevAsker,
+    private readonly maxEntries = 4_096,
+  ) {}
 
-  async ask(state: JevState, questions: JevQuestions) {
+  private cached(key: string): JevAnswer | undefined {
+    const answer = this.cache.get(key);
+    if (!answer) return undefined;
+    this.cache.delete(key);
+    this.cache.set(key, answer);
+    return answer;
+  }
+
+  private remember(key: string, answer: JevAnswer): void {
+    this.cache.delete(key);
+    this.cache.set(key, answer);
+    while (this.cache.size > this.maxEntries) {
+      const oldest = this.cache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.cache.delete(oldest);
+    }
+  }
+
+  async ask(state: JevState, questions: JevQuestions, cacheKeys: JevCacheKeys = {}) {
+    const stateIdentity = digest(state);
+    if (!stateIdentity) {
+      this.asks += 1;
+      return this.inner.ask(state, questions, cacheKeys);
+    }
+
     const missing: JevQuestions = {};
+    const missingKeys: Record<string, string> = {};
+    const pendingKeys: Record<string, string> = {};
     const answers: Record<string, JevAnswer> = {};
     for (const [name, question] of Object.entries(questions)) {
-      const cached = this.cache.get(name);
+      const identity = cacheKeys[name] ?? digest(question);
+      if (!identity) {
+        missing[name] = question;
+        continue;
+      }
+      const key = `${stateIdentity}:${name}:${identity}`;
+      const cached = this.cached(key);
       if (cached) {
         answers[name] = cached;
         this.answered += 1;
       } else {
         missing[name] = question;
+        missingKeys[name] = identity;
+        pendingKeys[name] = key;
       }
     }
     if (Object.keys(missing).length > 0) {
       this.asks += 1;
-      const fresh = await this.inner.ask(state, missing);
+      const fresh = await this.inner.ask(state, missing, missingKeys);
       for (const [name, answer] of Object.entries(fresh.answers)) {
-        this.cache.set(name, answer);
+        const key = pendingKeys[name];
+        if (key) this.remember(key, answer);
         answers[name] = answer;
       }
     }

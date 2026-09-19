@@ -121,13 +121,15 @@ permanent losses** across both thresholds tested. Switch it off with
 
 ### `context` — continuous reduction (recommended)
 
-Set `OMP_JEV_CONTEXT=1`. omp's `context` event replaces the messages of a
-**single request**, so the session on disk is untouched and a wrong judgement
-costs one turn instead of destroying history. Decisions are cached per tool
-call id, so only newly seen calls reach the provider.
+Continuous reduction is on by default; set `OMP_JEV_CONTEXT=0` to disable it.
+omp's `context` event replaces the messages of a **single request**, so the
+session on disk is untouched and a wrong judgement costs one turn instead of
+destroying history.
 
-Measured in a live omp session: `11726 -> 400 chars, dropped=16, asks=14,
-cacheHits=230`, with the task still answered correctly.
+Cached answers are scoped to an exact Jev state and a digest of the original
+tool call, full input, full result, and error state. Temporary names such as
+`t1` repeat in every window and are never identities. A changed goal, history,
+or output forces a fresh Jev evaluation.
 
 ### `session_before_compact` — replaces the compaction summary
 

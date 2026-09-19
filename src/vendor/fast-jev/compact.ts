@@ -7,6 +7,7 @@ import type {
   CompactResult,
   CompactionState,
   JevAsker,
+  JevCacheKeys,
   JevQuestions,
   Message,
   ResolvedCompactOptions,
@@ -133,7 +134,13 @@ async function askBatch(
   batch: readonly ToolCall[],
 ): Promise<Map<string, CallAnswer>> {
   const questions: JevQuestions = Object.assign({}, ...batch.map(questionsFor));
-  const { answers } = await asker.ask(state, questions);
+  const cacheKeys: JevCacheKeys = Object.fromEntries(
+    batch.flatMap((call) => [
+      [`call_${call.id}`, `${call.cacheKey}:call`],
+      [`result_${call.id}`, `${call.cacheKey}:result`],
+    ]),
+  );
+  const { answers } = await asker.ask(state, questions, cacheKeys);
   return new Map(
     batch.map((call) => [
       call.id,
