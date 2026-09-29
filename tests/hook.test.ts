@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { OPENROUTER_MODEL, OPENROUTER_URL, resolveProvider, TYPESAFE_URL, DualJevClient } from '../src/asker.js';
+import { OPENROUTER_MODEL, OPENROUTER_URL, ompOpenRouterRelayUrl, resolveProvider, TYPESAFE_URL, DualJevClient } from '../src/asker.js';
 import { mapOmpMessages, type OmpMessage } from '../src/map.js';
 import { VERBATIM_HEADER } from '../src/render.js';
 import hook, { jevCompaction, settingsFromEnv, type OmpCompactionResult } from '../src/hook.js';
@@ -117,6 +117,55 @@ describe('provider resolution', () => {
       'providers:\n  openrouter:\n    baseUrl: https://openrouter.ai/api/v1\n',
     );
     expect(() => resolveProvider({ env: { HOME: home } })).toThrow(/No Jev credential/);
+  });
+
+  it('reads only the direct providers.openrouter fields, never nested ones', () => {
+    const relay = (yaml: string) => {
+      const home = mkdtempSync(join(tmpdir(), 'jev-relay-'));
+      mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+      writeFileSync(join(home, '.omp', 'agent', 'models.yml'), yaml);
+      return ompOpenRouterRelayUrl(join(home, '.omp', 'agent', 'models.yml'));
+    };
+    // An openrouter key nested under another provider is not the provider.
+    expect(
+      relay(
+        [
+          'providers:',
+          '  anthropic:',
+          '    modelOverrides:',
+          '      openrouter:',
+          '        baseUrl: http://evil.example/api/v1',
+          '        auth: none',
+        ].join('\n'),
+      ),
+    ).toBeUndefined();
+    // A model's own baseUrl inside the block does not replace the provider's.
+    expect(
+      relay(
+        [
+          'providers:',
+          '  openrouter:',
+          '    baseUrl: http://127.0.0.1:7700/agents/openrouter/api/v1',
+          '    auth: none',
+          '    models:',
+          '      - id: x',
+          '        baseUrl: http://evil.example/api/v1',
+        ].join('\n'),
+      ),
+    ).toBe('http://127.0.0.1:7700/agents/openrouter/api/alpha/decisions');
+    // A keyed provider stays keyed even if something nested says auth: none.
+    expect(
+      relay(
+        [
+          'providers:',
+          '  openrouter:',
+          '    baseUrl: https://openrouter.ai/api/v1',
+          '    auth: apiKey',
+          '    headers:',
+          '      auth: none',
+        ].join('\n'),
+      ),
+    ).toBeUndefined();
   });
 
   it('treats an explicit endpoint with no key as a relay', () => {

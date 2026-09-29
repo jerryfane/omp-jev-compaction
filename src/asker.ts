@@ -57,8 +57,14 @@ export function ompOpenRouterRelayUrl(file: string): string | undefined {
   } catch {
     return undefined;
   }
+  // Only `providers.openrouter.baseUrl` and `.auth` count: the openrouter key
+  // must sit at the first level under `providers`, and its fields at the
+  // first level under it. Deeper keys of the same name (model overrides, a
+  // model's own baseUrl) are ignored rather than mistaken for the provider's.
   let inProviders = false;
+  let providerIndent = -1;
   let blockIndent = -1;
+  let fieldIndent = -1;
   let baseUrl: string | undefined;
   let keyless = false;
   for (const raw of text.split('\n')) {
@@ -71,11 +77,14 @@ export function ompOpenRouterRelayUrl(file: string): string | undefined {
       continue;
     }
     if (!inProviders) continue;
+    if (providerIndent < 0) providerIndent = indent;
     if (blockIndent < 0) {
-      if (line.trim() === 'openrouter:') blockIndent = indent;
+      if (indent === providerIndent && line.trim() === 'openrouter:') blockIndent = indent;
       continue;
     }
     if (indent <= blockIndent) break;
+    if (fieldIndent < 0) fieldIndent = indent;
+    if (indent !== fieldIndent) continue;
     const field = line.trim().match(/^(baseUrl|auth):\s*["']?([^"'\s]+)["']?$/);
     if (field?.[1] === 'baseUrl') baseUrl = field[2];
     if (field?.[1] === 'auth') keyless = field[2] === 'none';
