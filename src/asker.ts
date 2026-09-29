@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseJevResponse } from './vendor/fast-jev/request.js';
 import type { JevAsker, JevQuestions, JevResponse, JevState } from './vendor/fast-jev/types.js';
 
@@ -8,7 +10,11 @@ export interface JevProvider {
   readonly name: JevProviderName;
   readonly url: string;
   readonly model: string;
-  readonly apiKey: string;
+  /**
+   * Absent when a relay in front of the endpoint adds the key itself (a
+   * keyring relay, for instance): no Authorization header is sent then.
+   */
+  readonly apiKey?: string;
 }
 
 /** TypeSafe's own System One endpoint. */
@@ -30,6 +36,61 @@ export interface ResolveProviderOptions {
   model?: string;
   baseUrl?: string;
   env?: Record<string, string | undefined>;
+  /** omp's models file; defaults to `$HOME/.omp/agent/models.yml`. */
+  ompModelsFile?: string;
+}
+
+/**
+ * The Jev decision URL behind omp's own OpenRouter provider, when that
+ * provider is a keyless relay (`auth: none`), such as a keyring relay that
+ * adds the API key on the way out. Its chat `baseUrl` ends in `/api/v1`; the
+ * decision endpoint sits beside it at `/api/alpha/decisions`. Returns nothing
+ * for a provider that needs its own key or a URL of any other shape.
+ *
+ * Only the `providers.openrouter` block is read, line by line, so no YAML
+ * dependency is needed for two scalar fields.
+ */
+export function ompOpenRouterRelayUrl(file: string): string | undefined {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+  // Only `providers.openrouter.baseUrl` and `.auth` count: the openrouter key
+  // must sit at the first level under `providers`, and its fields at the
+  // first level under it. Deeper keys of the same name (model overrides, a
+  // model's own baseUrl) are ignored rather than mistaken for the provider's.
+  let inProviders = false;
+  let providerIndent = -1;
+  let blockIndent = -1;
+  let fieldIndent = -1;
+  let baseUrl: string | undefined;
+  let keyless = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\s+#.*$/, '');
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    const indent = line.length - line.trimStart().length;
+    if (indent === 0) {
+      if (blockIndent >= 0) break;
+      inProviders = line.trim() === 'providers:';
+      continue;
+    }
+    if (!inProviders) continue;
+    if (providerIndent < 0) providerIndent = indent;
+    if (blockIndent < 0) {
+      if (indent === providerIndent && line.trim() === 'openrouter:') blockIndent = indent;
+      continue;
+    }
+    if (indent <= blockIndent) break;
+    if (fieldIndent < 0) fieldIndent = indent;
+    if (indent !== fieldIndent) continue;
+    const field = line.trim().match(/^(baseUrl|auth):\s*["']?([^"'\s]+)["']?$/);
+    if (field?.[1] === 'baseUrl') baseUrl = field[2];
+    if (field?.[1] === 'auth') keyless = field[2] === 'none';
+  }
+  if (!keyless || !baseUrl || !/\/api\/v1\/?$/.test(baseUrl)) return undefined;
+  return baseUrl.replace(/\/v1\/?$/, '/alpha/decisions');
 }
 
 /**
@@ -41,17 +102,27 @@ export function resolveProvider(options: ResolveProviderOptions = {}): JevProvid
   const env = options.env ?? process.env;
   const typesafeKey = env.TYPESAFE_API_KEY?.trim();
   const openrouterKey = env.OPENROUTER_API_KEY?.trim();
-  const wanted =
+  const keyed =
     options.provider ?? (options.apiKey ? 'typesafe' : typesafeKey ? 'typesafe' : openrouterKey ? 'openrouter' : undefined);
+  const apiKey = options.apiKey?.trim() || (keyed === 'typesafe' ? typesafeKey : keyed === 'openrouter' ? openrouterKey : undefined);
 
-  if (!wanted) {
+  if (!apiKey) {
+    // No key here. An explicit endpoint, or omp's own keyless OpenRouter
+    // relay, is trusted to add it: the key never enters this process.
+    const modelsFile = options.ompModelsFile ?? (env.HOME ? join(env.HOME, '.omp', 'agent', 'models.yml') : undefined);
+    const relay = options.baseUrl ?? (keyed !== 'typesafe' && modelsFile ? ompOpenRouterRelayUrl(modelsFile) : undefined);
+    if (relay) {
+      const name = keyed ?? 'openrouter';
+      return { name, url: relay, model: options.model ?? (name === 'typesafe' ? TYPESAFE_MODEL : OPENROUTER_MODEL) };
+    }
     throw new Error(
-      'No Jev credential: set TYPESAFE_API_KEY or OPENROUTER_API_KEY (or pass apiKey/provider).',
+      keyed
+        ? `Jev provider "${keyed}" selected but its API key is not set, and no relay endpoint is configured.`
+        : 'No Jev credential: set TYPESAFE_API_KEY or OPENROUTER_API_KEY, set OMP_JEV_BASE_URL to a relay that adds the key, ' +
+            "or give omp's OpenRouter provider a keyless relay (auth: none) in ~/.omp/agent/models.yml.",
     );
   }
-
-  const apiKey = options.apiKey?.trim() ?? (wanted === 'typesafe' ? typesafeKey : openrouterKey);
-  if (!apiKey) throw new Error(`Jev provider "${wanted}" selected but its API key is not set.`);
+  const wanted = keyed as JevProviderName;
 
   return {
     name: wanted,
@@ -86,7 +157,7 @@ export class DualJevClient implements JevAsker {
       const response = await this.fetcher(this.provider.url, {
         method: 'POST',
         headers: {
-          authorization: `Bearer ${this.provider.apiKey}`,
+          ...(this.provider.apiKey ? { authorization: `Bearer ${this.provider.apiKey}` } : {}),
           'content-type': 'application/json',
         },
         body: JSON.stringify({ model: this.provider.model, state, questions }),

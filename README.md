@@ -73,6 +73,27 @@ probabilities, so one client covers both. `TYPESAFE_API_KEY` wins when both are
 set; `OMP_JEV_PROVIDER` forces one. OpenRouter's path is explicitly alpha
 upstream and may move — `OMP_JEV_BASE_URL` overrides it without a code change.
 
+### Through a key relay (no key in the session)
+
+The key can stay out of the agent session entirely. With no key set, the plugin
+uses a relay that adds the key on the way out:
+
+- `OMP_JEV_BASE_URL` pointing at the relay's decision endpoint, with no key set,
+  is called without an `Authorization` header.
+- Otherwise, if omp's own OpenRouter provider in `~/.omp/agent/models.yml` is a
+  keyless relay (`auth: none`, `baseUrl` ending in `/api/v1`), the plugin uses
+  that relay's `/api/alpha/decisions` endpoint. A machine that already routes
+  omp through a relay such as a keyring needs no extra setting:
+
+```yaml
+providers:
+  openrouter:
+    baseUrl: http://127.0.0.1:7700/agents/openrouter/api/v1
+    auth: none
+```
+
+A key in the environment still wins over either relay.
+
 Measured on OpenRouter: ~430 ms per decision request, $0.0000198 for 472 input
 tokens.
 
@@ -155,7 +176,7 @@ All optional, read from the environment.
 | `OMP_JEV_CACHE_CEILING` | `0.8` | Non-sticky mode only: skip sessions at least this share cache reads |
 | `OMP_JEV_PROVIDER` | auto | `typesafe` or `openrouter` |
 | `OMP_JEV_MODEL` | per provider | Model id override |
-| `OMP_JEV_BASE_URL` | per provider | Endpoint override |
+| `OMP_JEV_BASE_URL` | per provider | Endpoint override; with no key set, a relay that adds the key |
 | `OMP_JEV_KEEP_THRESHOLD` | `0.2` | Minimum probability for a call or result to stay |
 | `OMP_JEV_ALLOW_DROPPING_CALLS` | off | `1` lets a low score erase the whole call, not just its output |
 | `OMP_JEV_PRESERVE_RECENT` | `0` for compaction, `6` for context | Newest messages never touched |
