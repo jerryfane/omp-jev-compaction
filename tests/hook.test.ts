@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { OPENROUTER_MODEL, OPENROUTER_URL, resolveProvider, TYPESAFE_URL, DualJevClient } from '../src/asker.js';
 import { mapOmpMessages, type OmpMessage } from '../src/map.js';
 import { VERBATIM_HEADER } from '../src/render.js';
@@ -66,6 +69,60 @@ describe('provider resolution', () => {
 
   it('refuses to run with no credential', () => {
     expect(() => resolveProvider({ env: {} })).toThrow(/TYPESAFE_API_KEY or OPENROUTER_API_KEY/);
+  });
+
+  it("uses omp's keyless OpenRouter relay and sends no Authorization header", async () => {
+    const home = mkdtempSync(join(tmpdir(), 'jev-relay-'));
+    mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+    writeFileSync(
+      join(home, '.omp', 'agent', 'models.yml'),
+      [
+        '# relay adds the key',
+        'providers:',
+        '  anthropic:',
+        '    baseUrl: https://api.anthropic.com/v1',
+        '  openrouter:',
+        '    baseUrl: http://127.0.0.1:7700/agents/openrouter/api/v1',
+        '    auth: none',
+        'models: []',
+      ].join('\n'),
+    );
+    const provider = resolveProvider({ env: { HOME: home } });
+    expect(provider).toEqual({
+      name: 'openrouter',
+      url: 'http://127.0.0.1:7700/agents/openrouter/api/alpha/decisions',
+      model: OPENROUTER_MODEL,
+    });
+
+    const headers: Record<string, string>[] = [];
+    const client = new DualJevClient({
+      env: { HOME: home },
+      fetch: (async (_url: string, init: { headers: Record<string, string> }) => {
+        headers.push(init.headers);
+        return new Response(JSON.stringify({ answers: { q: { type: 'noul', noul: 0.5 } } }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    await client.ask({ context: 'c', goal: 'g', history: [] } as never, { q: { type: 'noul', instructions: 'x' } } as never);
+    expect(headers[0]).not.toHaveProperty('authorization');
+
+    // A key in the environment still wins over the relay.
+    expect(resolveProvider({ env: { HOME: home, OPENROUTER_API_KEY: 'or' } })).toMatchObject({ url: OPENROUTER_URL, apiKey: 'or' });
+  });
+
+  it('ignores an OpenRouter provider that needs its own key', () => {
+    const home = mkdtempSync(join(tmpdir(), 'jev-relay-'));
+    mkdirSync(join(home, '.omp', 'agent'), { recursive: true });
+    writeFileSync(
+      join(home, '.omp', 'agent', 'models.yml'),
+      'providers:\n  openrouter:\n    baseUrl: https://openrouter.ai/api/v1\n',
+    );
+    expect(() => resolveProvider({ env: { HOME: home } })).toThrow(/No Jev credential/);
+  });
+
+  it('treats an explicit endpoint with no key as a relay', () => {
+    const provider = resolveProvider({ baseUrl: 'http://relay.local/decisions', env: {} });
+    expect(provider).toMatchObject({ name: 'openrouter', url: 'http://relay.local/decisions' });
+    expect(provider.apiKey).toBeUndefined();
   });
 
   it('sends the same body to whichever provider and reads noul back', async () => {
