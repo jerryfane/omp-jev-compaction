@@ -66,7 +66,12 @@ Cost is negligible, about $0.0005 per pass, and decisions are cached.
 | Provider | Endpoint | Model | Key |
 |---|---|---|---|
 | TypeSafe | `POST https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` |
-| OpenRouter | `POST https://openrouter.ai/api/alpha/decisions` | `typesafe/jev-1.13` | `OPENROUTER_API_KEY` |
+| OpenRouter | `POST https://openrouter.ai/api/alpha/decisions` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` |
+
+Both model ids are rolling aliases for the newest Jev release, so the plugin
+follows new releases without an update. On OpenRouter the leading `~` is part
+of the id; `typesafe/jev-latest` without it is rejected. `OMP_JEV_MODEL` pins a
+specific version if one is ever needed.
 
 Both take the identical `{model, state, questions}` body and return `noul`
 probabilities, so one client covers both. `TYPESAFE_API_KEY` wins when both are
