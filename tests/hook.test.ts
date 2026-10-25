@@ -61,6 +61,13 @@ describe('provider resolution', () => {
     expect(provider.model).toBe(OPENROUTER_MODEL);
   });
 
+  it('asks for the rolling jev-latest alias on both providers, never a pinned version', () => {
+    // OpenRouter only knows the alias with its leading `~`; without it the request fails.
+    expect(resolveProvider({ env: { OPENROUTER_API_KEY: 'or' } }).model).toBe('~typesafe/jev-latest');
+    expect(resolveProvider({ env: { TYPESAFE_API_KEY: 'ts' } }).model).toBe('jev-latest');
+    expect(resolveProvider({ model: 'typesafe/jev-1.14', env: { OPENROUTER_API_KEY: 'or' } }).model).toBe('typesafe/jev-1.14');
+  });
+
   it('honours an explicit provider even when the other key exists', () => {
     const provider = resolveProvider({ provider: 'openrouter', env: { TYPESAFE_API_KEY: 'ts', OPENROUTER_API_KEY: 'or' } });
     expect(provider.name).toBe('openrouter');

@@ -25,9 +25,13 @@ export const TYPESAFE_MODEL = 'jev-latest';
  * OpenRouter serves the same `{model, state, questions}` decision body on an
  * alpha path, so one extra URL covers it rather than a second client. The path
  * is explicitly alpha upstream and may move; `baseUrl` overrides it.
+ *
+ * The model is OpenRouter's rolling alias, so new Jev releases are picked up
+ * without a plugin release. The leading `~` is part of the id: OpenRouter
+ * rejects `typesafe/jev-latest` as a model that does not exist.
  */
 export const OPENROUTER_URL = 'https://openrouter.ai/api/alpha/decisions';
-export const OPENROUTER_MODEL = 'typesafe/jev-1.13';
+export const OPENROUTER_MODEL = '~typesafe/jev-latest';
 
 export interface ResolveProviderOptions {
   /** Force one provider instead of picking by which key exists. */
