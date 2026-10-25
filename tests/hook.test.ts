@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPENROUTER_MODEL, OPENROUTER_URL, ompOpenRouterRelayUrl, resolveProvider, TYPESAFE_URL, DualJevClient } from '../src/asker.js';
@@ -59,13 +59,6 @@ describe('provider resolution', () => {
     expect(provider.name).toBe('openrouter');
     expect(provider.url).toBe(OPENROUTER_URL);
     expect(provider.model).toBe(OPENROUTER_MODEL);
-  });
-
-  it('asks for the rolling jev-latest alias on both providers, never a pinned version', () => {
-    // OpenRouter only knows the alias with its leading `~`; without it the request fails.
-    expect(resolveProvider({ env: { OPENROUTER_API_KEY: 'or' } }).model).toBe('~typesafe/jev-latest');
-    expect(resolveProvider({ env: { TYPESAFE_API_KEY: 'ts' } }).model).toBe('jev-latest');
-    expect(resolveProvider({ model: 'typesafe/jev-1.14', env: { OPENROUTER_API_KEY: 'or' } }).model).toBe('typesafe/jev-1.14');
   });
 
   it('honours an explicit provider even when the other key exists', () => {
@@ -194,6 +187,33 @@ describe('provider resolution', () => {
     expect(response.answers.q).toEqual({ type: 'noul', noul: 0.9 });
     expect(seen[0].url).toBe(OPENROUTER_URL);
     expect(seen[0].body).toMatchObject({ model: OPENROUTER_MODEL, questions: { q: { type: 'noul' } } });
+  });
+
+  it('requests the rolling alias over the omp relay and accepts the release it resolves to', async () => {
+    // The keyring relay path the fleet actually uses: no key, decisions URL derived from omp's models.yml.
+    const dir = mkdtempSync(join(tmpdir(), 'jev-alias-'));
+    const modelsFile = join(dir, 'models.yml');
+    writeFileSync(modelsFile, 'providers:\n  openrouter:\n    baseUrl: http://relay.local/agents/openrouter/api/v1\n    auth: none\n');
+    const sent: { url: string; model: unknown }[] = [];
+    const fetcher = (async (url: string, init: { body: string }) => {
+      sent.push({ url, model: JSON.parse(init.body).model });
+      // OpenRouter echoes the dated release behind the alias, not the alias itself.
+      return { ok: true, status: 200, text: async () => JSON.stringify({ model: 'typesafe/jev-1.14-20261014', answers: { q: { type: 'noul', noul: 0.4 } } }) };
+    }) as unknown as typeof fetch;
+    const ask = (options: { model?: string }) =>
+      new DualJevClient({ env: {}, ompModelsFile: modelsFile, fetch: fetcher, ...options }).ask(
+        { context: 'c', goal: 'g', history: [] },
+        { q: { type: 'noul', instructions: 'i' } },
+      );
+    try {
+      expect((await ask({})).answers.q).toEqual({ type: 'noul', noul: 0.4 });
+      // OpenRouter rejects `typesafe/jev-latest` without the `~`, and a dated id would stop following new releases.
+      expect(sent[0]).toEqual({ url: 'http://relay.local/agents/openrouter/api/alpha/decisions', model: '~typesafe/jev-latest' });
+      await ask({ model: 'typesafe/jev-1.14' });
+      expect(sent[1].model).toBe('typesafe/jev-1.14');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
