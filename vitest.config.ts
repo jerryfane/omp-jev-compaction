@@ -8,10 +8,12 @@ import { defineConfig } from 'vitest/config';
  * the real HOME, which they need for the omp provider settings.
  */
 export const TEST_HOME = join(tmpdir(), `omp-jev-compaction-test-home-${process.pid}`);
+/** Same predicate as tests/live.test.ts: only JEV_LIVE=1 runs live tests. */
+const live = process.env.JEV_LIVE === '1';
 
 export default defineConfig({
   test: {
-    env: process.env.JEV_LIVE ? {} : { HOME: TEST_HOME },
-    globalSetup: process.env.JEV_LIVE ? [] : ['./tests/global-setup.ts'],
+    env: live ? {} : { HOME: TEST_HOME },
+    globalSetup: live ? [] : ['./tests/global-setup.ts'],
   },
 });
