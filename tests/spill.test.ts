@@ -64,20 +64,21 @@ describe('spill retention', () => {
     expect(existsSync(other)).toBe(true);
   });
 
-  it('sweeps on spill, at most once per interval across callers', () => {
+  it('sweeps on spill, at most once per interval of elapsed time', () => {
     const d = dir();
-    // Start of the current sweep hour, so now and now + 1 s fall in the same hour.
-    const now = Math.floor(Date.now() / PRUNE_INTERVAL_MS) * PRUNE_INTERVAL_MS + 1000;
+    // One millisecond before an hour boundary: the interval is elapsed time, not the clock hour.
+    const now = Math.floor(Date.now() / PRUNE_INTERVAL_MS) * PRUNE_INTERVAL_MS - 1;
     const old = spillPayload(`old\n${'x'.repeat(2000)}`, { dir: d, retentionDays: 0 }).path;
     age(old, 20, now);
     expect(maybePruneSpill(d, 14, now)).toBe(1);
 
     const again = spillPayload(`again\n${'z'.repeat(2000)}`, { dir: d, retentionDays: 0 }).path;
     age(again, 20, now);
-    // Within the interval: no second sweep, the old file stays for now.
-    expect(maybePruneSpill(d, 14, now + 1000)).toBe(0);
+    // Across the hour boundary but within the interval: no second sweep, the old file stays.
+    expect(maybePruneSpill(d, 14, now + 2)).toBe(0);
+    expect(maybePruneSpill(d, 14, now + PRUNE_INTERVAL_MS - 1)).toBe(0);
     expect(existsSync(again)).toBe(true);
-    expect(maybePruneSpill(d, 14, now + PRUNE_INTERVAL_MS + 1000)).toBe(1);
+    expect(maybePruneSpill(d, 14, now + PRUNE_INTERVAL_MS)).toBe(1);
   });
 
   it('keeps everything when retention is 0', () => {
