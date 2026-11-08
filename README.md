@@ -147,8 +147,9 @@ permanent losses** across both thresholds tested. Switch it off with
 Spill files are deleted 14 to 15 days after they are written (set
 `OMP_JEV_SPILL_RETENTION_DAYS`, `0` keeps them forever): a day folder is removed
 whole once the end of its day is past retention, so cleanup never touches a
-folder a spill can still be writing to. The directory is swept at most once an
-hour, from whichever omp process spills next; only day folders and pre-0.2.0
+folder a spill can still be writing to. The directory is swept about once an
+hour, from whichever omp process spills next (two processes may rarely both
+sweep, which is harmless); only day folders and pre-0.2.0
 `<hash>.txt` files are touched. Spilling an identical payload on a later day
 writes a fresh copy for that day.
 

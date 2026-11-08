@@ -17,7 +17,10 @@ export const DEFAULT_SPILL_DIR = join(homedir(), '.omp', 'jev-spill');
 /** Spill files are deleted this many days after the end of the UTC day they were written. */
 export const DEFAULT_SPILL_RETENTION_DAYS = 14;
 
-/** Minimum time between two sweeps of one directory, across every omp process sharing it. */
+/**
+ * Time between two sweeps of one directory. Shared by every omp process through the
+ * `.last-prune` marker, best-effort: two processes may rarely both sweep (harmless).
+ */
 export const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
