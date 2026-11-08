@@ -143,6 +143,11 @@ reduced context **63-75%**. With parking on, the misses are **recoverable: 0
 permanent losses** across both thresholds tested. Switch it off with
 `OMP_JEV_SPILL=0` and the misses become permanent.
 
+Spill files are deleted after **14 days** (set `OMP_JEV_SPILL_RETENTION_DAYS`,
+`0` keeps them forever). The directory is swept at most once an hour, from
+whichever omp process spills next; only `<hash>.txt` files are touched.
+Spilling an identical payload again refreshes its age.
+
 ## The two integration points
 
 ### `context` — continuous reduction (recommended)

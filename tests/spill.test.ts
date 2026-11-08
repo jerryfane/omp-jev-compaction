@@ -1,11 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { rewriteOmpMessages } from '../src/context.js';
 import type { OmpMessage } from '../src/map.js';
-import { isSpillNotice, spillPayload } from '../src/spill.js';
+import { isSpillNotice, maybePruneSpill, PRUNE_INTERVAL_MS, pruneSpill, spillPayload } from '../src/spill.js';
 
 const dir = () => mkdtempSync(join(tmpdir(), 'jev-spill-test-'));
 
@@ -32,6 +32,60 @@ describe('spillPayload', () => {
     const notice = spillPayload('x'.repeat(2000), { dir: d }).notice;
     expect(isSpillNotice(notice)).toBe(true);
     expect(isSpillNotice('ordinary tool output')).toBe(false);
+  });
+});
+
+describe('spill retention', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const age = (path: string, days: number, now: number) => {
+    const t = (now - days * DAY) / 1000;
+    utimesSync(path, t, t);
+  };
+
+  it('deletes spill files past the retention age and keeps newer ones', () => {
+    const d = dir();
+    const now = Date.now();
+    const old = spillPayload(`old\n${'x'.repeat(2000)}`, { dir: d, retentionDays: 0 }).path;
+    const fresh = spillPayload(`fresh\n${'y'.repeat(2000)}`, { dir: d, retentionDays: 0 }).path;
+    age(old, 15, now);
+    age(fresh, 13, now);
+    expect(pruneSpill(d, 14 * DAY, now)).toBe(1);
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+  });
+
+  it('only ever deletes its own <hash>.txt files', () => {
+    const d = dir();
+    const now = Date.now();
+    const other = join(d, 'notes.txt');
+    writeFileSync(other, 'not ours');
+    age(other, 100, now);
+    expect(pruneSpill(d, 14 * DAY, now)).toBe(0);
+    expect(existsSync(other)).toBe(true);
+  });
+
+  it('sweeps on spill, at most once per interval across callers', () => {
+    const d = dir();
+    const now = Date.now();
+    const old = spillPayload(`old\n${'x'.repeat(2000)}`, { dir: d, retentionDays: 0 }).path;
+    age(old, 20, now);
+    expect(maybePruneSpill(d, 14, now)).toBe(1);
+
+    const again = spillPayload(`again\n${'z'.repeat(2000)}`, { dir: d, retentionDays: 0 }).path;
+    age(again, 20, now);
+    // Within the interval: no second sweep, the old file stays for now.
+    expect(maybePruneSpill(d, 14, now + 1000)).toBe(0);
+    expect(existsSync(again)).toBe(true);
+    expect(maybePruneSpill(d, 14, now + PRUNE_INTERVAL_MS + 1000)).toBe(1);
+  });
+
+  it('keeps everything when retention is 0', () => {
+    const d = dir();
+    const now = Date.now();
+    const old = spillPayload(`old\n${'x'.repeat(2000)}`, { dir: d, retentionDays: 0 }).path;
+    age(old, 400, now);
+    expect(maybePruneSpill(d, 0, now)).toBe(0);
+    expect(existsSync(old)).toBe(true);
   });
 });
 

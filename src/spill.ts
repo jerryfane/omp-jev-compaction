@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,10 +14,20 @@ import { join } from 'node:path';
  */
 export const DEFAULT_SPILL_DIR = join(homedir(), '.omp', 'jev-spill');
 
+/** Spill files older than this are deleted. Re-spilling an identical payload refreshes its age. */
+export const DEFAULT_SPILL_RETENTION_DAYS = 14;
+
+/** How often one directory is swept, across every omp process sharing it. */
+export const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+const PRUNE_MARKER = '.last-prune';
+
 export interface SpillOptions {
   dir?: string;
   /** Characters of the head kept inline before the pointer. */
   headChars?: number;
+  /** Delete spill files older than this many days; 0 keeps them forever. */
+  retentionDays?: number;
 }
 
 export interface SpilledPayload {
@@ -49,6 +59,7 @@ export function spillPayload(text: string, options: SpillOptions = {}): SpilledP
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(path, text);
+  maybePruneSpill(dir, options.retentionDays ?? DEFAULT_SPILL_RETENTION_DAYS);
 
   const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : '';
   return {
@@ -66,4 +77,52 @@ export function spillPayload(text: string, options: SpillOptions = {}): SpilledP
  */
 export function isSpillNotice(text: string): boolean {
   return text.includes('[jev elided ') && text.includes('read ');
+}
+
+/**
+ * Deletes `<hash>.txt` spill files whose last write is older than `maxAgeMs`.
+ * Touches nothing else in the directory. Returns how many files were removed.
+ */
+export function pruneSpill(dir: string, maxAgeMs: number, now: number = Date.now()): number {
+  let removed = 0;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!/^[0-9a-f]{16}\.txt$/.test(name)) continue;
+    const path = join(dir, name);
+    try {
+      if (now - statSync(path).mtimeMs > maxAgeMs) {
+        unlinkSync(path);
+        removed++;
+      }
+    } catch {
+      // Another process removed or rewrote it meanwhile; either way it is not ours to fix.
+    }
+  }
+  return removed;
+}
+
+/**
+ * Sweeps `dir` at most once per PRUNE_INTERVAL_MS, shared across processes through a
+ * marker file whose time is claimed before sweeping. Never throws: losing a sweep only
+ * delays cleanup, while an exception here would break compaction.
+ */
+export function maybePruneSpill(dir: string, retentionDays: number, now: number = Date.now()): number {
+  if (!(retentionDays > 0)) return 0;
+  const marker = join(dir, PRUNE_MARKER);
+  try {
+    try {
+      if (now - statSync(marker).mtimeMs < PRUNE_INTERVAL_MS) return 0;
+    } catch {
+      // No marker yet: first sweep.
+    }
+    writeFileSync(marker, new Date(now).toISOString());
+    return pruneSpill(dir, retentionDays * 24 * 60 * 60 * 1000, now);
+  } catch {
+    return 0;
+  }
 }

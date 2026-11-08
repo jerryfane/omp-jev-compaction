@@ -1,0 +1,39 @@
+name: Release
+
+# A tag vX.Y.Z publishes the built plugin (npm pack of dist/) and SHA256SUMS as a GitHub release.
+# fleetup pins this asset by sha256 next to omp. The tag must match package.json's version.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          omp_version=$(node -p "require('./package.json').omp.version")
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != package.json v$version"; exit 1; }
+          test "$version" = "$omp_version" || { echo "package.json version $version != omp.version $omp_version"; exit 1; }
+      - name: Pack
+        run: |
+          npm run build
+          npm pack
+          sha256sum omp-jev-compaction-*.tgz > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" omp-jev-compaction-*.tgz SHA256SUMS --title "$GITHUB_REF_NAME" --notes "Built plugin (npm pack of dist/) and SHA256SUMS. Install: omp plugin install <tgz> after checking its sha256."
