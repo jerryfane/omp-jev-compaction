@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,7 +20,13 @@ export const DEFAULT_SPILL_RETENTION_DAYS = 14;
 /** How often one directory is swept, across every omp process sharing it. */
 export const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
-const PRUNE_MARKER = '.last-prune';
+const SPILL_RE = /^[0-9a-f]{16}\.txt$/;
+/** Leftovers of a crashed write (`<hash>.txt.<pid>.<rand>.tmp`) or prune (`.prune-<hash>.txt.<pid>.<rand>`). */
+const LEFTOVER_RE = /^(?:[0-9a-f]{16}\.txt\.\d+\.[0-9a-f]+\.tmp|\.prune-[0-9a-f]{16}\.txt\.\d+\.[0-9a-f]+)$/;
+/** One empty file per sweep hour; whoever creates it exclusively owns that hour's sweep. */
+const SLOT_RE = /^\.prune-slot-\d+$/;
+
+const unique = () => `${process.pid}.${randomBytes(4).toString('hex')}`;
 
 export interface SpillOptions {
   dir?: string;
@@ -58,7 +64,14 @@ export function spillPayload(text: string, options: SpillOptions = {}): SpilledP
   const path = join(dir, `${digest}.txt`);
 
   mkdirSync(dir, { recursive: true });
-  writeFileSync(path, text);
+  /**
+   * Write to a temporary name and rename it into place, so the named file is always
+   * complete and a re-spill always installs a fresh file. pruneSpill relies on that to
+   * tell a refreshed payload from an expired one.
+   */
+  const tmp = `${path}.${unique()}.tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, path);
   maybePruneSpill(dir, options.retentionDays ?? DEFAULT_SPILL_RETENTION_DAYS);
 
   const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : '';
@@ -80,8 +93,15 @@ export function isSpillNotice(text: string): boolean {
 }
 
 /**
- * Deletes `<hash>.txt` spill files whose last write is older than `maxAgeMs`.
- * Touches nothing else in the directory. Returns how many files were removed.
+ * Deletes `<hash>.txt` spill files whose last write is older than `maxAgeMs`, and stale
+ * leftovers of crashed writes or sweeps. Touches nothing else in the directory. Returns
+ * how many spill files were removed.
+ *
+ * An expired file is first moved aside and checked again before it is deleted. A process
+ * that re-spills the same payload meanwhile renames a fresh file into place: if that
+ * happened before the move, the moved file is fresh and goes back; if after, the fresh
+ * file stays at the path and only the old one is deleted. Either way a notice that was
+ * just returned keeps pointing at its payload.
  */
 export function pruneSpill(dir: string, maxAgeMs: number, now: number = Date.now()): number {
   let removed = 0;
@@ -92,35 +112,55 @@ export function pruneSpill(dir: string, maxAgeMs: number, now: number = Date.now
     return 0;
   }
   for (const name of names) {
-    if (!/^[0-9a-f]{16}\.txt$/.test(name)) continue;
     const path = join(dir, name);
-    try {
-      if (now - statSync(path).mtimeMs > maxAgeMs) {
-        unlinkSync(path);
-        removed++;
+    if (LEFTOVER_RE.test(name) || SLOT_RE.test(name)) {
+      try {
+        if (now - statSync(path).mtimeMs > 2 * PRUNE_INTERVAL_MS) unlinkSync(path);
+      } catch {
+        // Gone already.
       }
+      continue;
+    }
+    if (!SPILL_RE.test(name)) continue;
+    try {
+      if (now - statSync(path).mtimeMs <= maxAgeMs) continue;
     } catch {
-      // Another process removed or rewrote it meanwhile; either way it is not ours to fix.
+      continue;
+    }
+    const aside = join(dir, `.prune-${name}.${unique()}`);
+    try {
+      renameSync(path, aside);
+    } catch {
+      continue; // Another sweeper took it, or it is gone.
+    }
+    try {
+      if (now - statSync(aside).mtimeMs <= maxAgeMs) {
+        renameSync(aside, path); // Refreshed before we moved it: put it back.
+        continue;
+      }
+      unlinkSync(aside);
+      removed++;
+    } catch {
+      // Left for the leftover cleanup of a later sweep.
     }
   }
   return removed;
 }
 
 /**
- * Sweeps `dir` at most once per PRUNE_INTERVAL_MS, shared across processes through a
- * marker file whose time is claimed before sweeping. Never throws: losing a sweep only
- * delays cleanup, while an exception here would break compaction.
+ * Sweeps `dir` at most once per PRUNE_INTERVAL_MS across every process sharing it: the
+ * sweep for an hour belongs to whoever exclusively creates that hour's slot file. Never
+ * throws: losing a sweep only delays cleanup, while an exception here would break
+ * compaction.
  */
 export function maybePruneSpill(dir: string, retentionDays: number, now: number = Date.now()): number {
   if (!(retentionDays > 0)) return 0;
-  const marker = join(dir, PRUNE_MARKER);
   try {
-    try {
-      if (now - statSync(marker).mtimeMs < PRUNE_INTERVAL_MS) return 0;
-    } catch {
-      // No marker yet: first sweep.
-    }
-    writeFileSync(marker, new Date(now).toISOString());
+    writeFileSync(join(dir, `.prune-slot-${Math.floor(now / PRUNE_INTERVAL_MS)}`), '', { flag: 'wx' });
+  } catch {
+    return 0; // This hour is already claimed (or the directory is not writable).
+  }
+  try {
     return pruneSpill(dir, retentionDays * 24 * 60 * 60 * 1000, now);
   } catch {
     return 0;

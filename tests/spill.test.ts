@@ -66,7 +66,8 @@ describe('spill retention', () => {
 
   it('sweeps on spill, at most once per interval across callers', () => {
     const d = dir();
-    const now = Date.now();
+    // Start of the current sweep hour, so now and now + 1 s fall in the same hour.
+    const now = Math.floor(Date.now() / PRUNE_INTERVAL_MS) * PRUNE_INTERVAL_MS + 1000;
     const old = spillPayload(`old\n${'x'.repeat(2000)}`, { dir: d, retentionDays: 0 }).path;
     age(old, 20, now);
     expect(maybePruneSpill(d, 14, now)).toBe(1);
