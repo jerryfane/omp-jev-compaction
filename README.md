@@ -133,15 +133,24 @@ wired up yet.
 
 ## Dropped output is recoverable
 
-A dropped payload is written to `~/.omp/jev-spill/<hash>.txt` and the
-replacement text names that file, so the agent gets it back with one `read`
-instead of re-running the tool. Identical payloads share one file.
+A dropped payload is written to `~/.omp/jev-spill/<YYYY-MM-DD>/<hash>.txt` (the
+UTC day it was written) and the replacement text names that file, so the agent
+gets it back with one `read` instead of re-running the tool. Identical payloads
+spilled the same day share one file.
 
 This matters because reduction does lose facts. Measured with
 `scripts/recall.ts`: full context answered **100%** of planted questions,
 reduced context **63-75%**. With parking on, the misses are **recoverable: 0
 permanent losses** across both thresholds tested. Switch it off with
 `OMP_JEV_SPILL=0` and the misses become permanent.
+
+Spill files are deleted 14 to 15 days after they are written (set
+`OMP_JEV_SPILL_RETENTION_DAYS`, `0` keeps them forever): a day folder is removed
+whole once the end of its day is past retention, so cleanup never touches a
+folder a spill can still be writing to. The directory is swept at most once an
+hour, from whichever omp process spills next; only day folders and pre-0.2.0
+`<hash>.txt` files are touched. Spilling an identical payload on a later day
+writes a fresh copy for that day.
 
 ## The two integration points
 

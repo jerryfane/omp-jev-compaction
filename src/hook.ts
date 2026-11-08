@@ -8,6 +8,7 @@ import {
 } from './context.js';
 import { mapOmpMessages, type OmpMessage } from './map.js';
 import { renderVerbatim, transcriptChars } from './render.js';
+import { DEFAULT_SPILL_RETENTION_DAYS } from './spill.js';
 import { compact } from './vendor/fast-jev/compact.js';
 import type { CompactOptions, CompactResult, JevAsker, Message } from './vendor/fast-jev/types.js';
 
@@ -30,7 +31,7 @@ export interface OmpCompactionPreparation {
 
 export interface JevHookSettings extends CompactOptions {
   /** Park dropped payloads on disk so they can be read back. Default on. */
-  spill?: { enabled?: boolean; dir?: string; headChars?: number };
+  spill?: { enabled?: boolean; dir?: string; headChars?: number; retentionDays?: number };
   /** Turn on continuous per-request reduction without an environment variable. */
   context?: boolean;
   provider?: JevProviderName;
@@ -95,6 +96,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
     spill: {
       enabled: env.OMP_JEV_SPILL !== '0',
       dir: env.OMP_JEV_SPILL_DIR?.trim() || undefined,
+      retentionDays: numberFrom(env.OMP_JEV_SPILL_RETENTION_DAYS, DEFAULT_SPILL_RETENTION_DAYS),
     },
     timeoutMs: numberFrom(env.OMP_JEV_TIMEOUT_MS, DEFAULTS.timeoutMs),
   };

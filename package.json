@@ -1,6 +1,6 @@
 {
   "name": "omp-jev-compaction",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Verbatim, Jev-scored context compaction for omp, over TypeSafe or OpenRouter.",
   "type": "module",
   "license": "MIT",
@@ -39,7 +39,7 @@
   },
   "omp": {
     "name": "omp-jev-compaction",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Verbatim context reduction scored by Jev, over TypeSafe or OpenRouter",
     "extensions": [
       "dist/hook.js"
@@ -88,6 +88,13 @@
         "default": "auto",
         "description": "Which decision endpoint to use",
         "env": "OMP_JEV_PROVIDER"
+      },
+      "spillRetentionDays": {
+        "type": "number",
+        "default": 14,
+        "min": 0,
+        "description": "Delete parked output older than this many days (0 keeps it forever)",
+        "env": "OMP_JEV_SPILL_RETENTION_DAYS"
       }
     }
   }
