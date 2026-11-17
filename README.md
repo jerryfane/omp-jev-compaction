@@ -57,10 +57,13 @@ Turn it off with `OMP_JEV_CONTEXT=0` or `omp plugin disable omp-jev-compaction`.
   invent or blur facts; a dropped output can't.
 - **Only outputs go, never the record of the work.** By default a low score removes a tool's *result*,
   never the fact that the call happened, so the agent doesn't redo or contradict its own work.
-- **Nothing is lost.** Every dropped output is saved to `~/.omp/jev-spill/<day>/<hash>.txt` and the
-  note names the file, so the agent gets it back with one `read`. In recall tests, reduced context
-  answered 63–75% of planted questions directly, and every miss was recoverable from the saved file:
-  0 permanent losses. Saved files are deleted after 14 days.
+- **Dropped output can be read back.** Each dropped output is saved to
+  `~/.omp/jev-spill/<day>/<hash>.txt` and the note names the file, so the agent gets it back with one
+  `read`. In recall tests, reduced context answered 63–75% of planted questions directly, and every
+  miss was recoverable from the saved file: 0 permanent losses. If saving fails (say, the disk is full),
+  the output is still dropped and the note tells the agent to re-run the tool instead. Saved files are
+  removed by a best-effort sweep once 14 days have passed after the end of the UTC day they were
+  written.
 - **Per request, not per session.** Reduction changes what one request sends; the session on disk is
   untouched, so a wrong call costs one turn, not your history.
 - **Prompt cache friendly.** Decisions are remembered and re-applied, so the start of the context stays
@@ -102,7 +105,7 @@ All optional, read from the environment.
 | `OMP_JEV_CONTEXT` | **on** | `0` disables continuous per-request reduction |
 | `OMP_JEV_MIN_CHARS` | `150000` | Only reduce a context at least this large |
 | `OMP_JEV_KEEP_THRESHOLD` | `0.2` | Minimum probability for a call or result to stay |
-| `OMP_JEV_PRESERVE_RECENT` | `6` | Newest messages never touched (`0` for the compaction hook) |
+| `OMP_JEV_PRESERVE_RECENT` | `0` | Newest messages never touched; set e.g. `6` to always keep the latest few intact |
 | `OMP_JEV_SPILL` | on | `0` stops saving dropped outputs (misses become permanent) |
 | `OMP_JEV_SPILL_RETENTION_DAYS` | `14` | Days to keep saved outputs; `0` keeps them forever |
 | `OMP_JEV_ALLOW_DROPPING_CALLS` | off | `1` lets a low score erase the whole call, not just its output |
