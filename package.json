@@ -1,7 +1,7 @@
 {
   "name": "omp-jev-compaction",
   "version": "0.2.0",
-  "description": "Verbatim, Jev-scored context compaction for omp, over TypeSafe or OpenRouter.",
+  "description": "Drop stale tool output from omp agent context before every request: verbatim, recoverable, scored by TypeSafe's Jev.",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -20,6 +20,7 @@
   "files": [
     "dist",
     "README.md",
+    "docs/DESIGN.md",
     "LICENSE"
   ],
   "scripts": {
@@ -97,5 +98,22 @@
         "env": "OMP_JEV_SPILL_RETENTION_DAYS"
       }
     }
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jerryfane/omp-jev-compaction.git"
+  },
+  "homepage": "https://github.com/jerryfane/omp-jev-compaction#readme",
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "ai-agents",
+    "coding-agent",
+    "context-window",
+    "compaction",
+    "llm",
+    "jev",
+    "typesafe",
+    "openrouter"
+  ]
 }

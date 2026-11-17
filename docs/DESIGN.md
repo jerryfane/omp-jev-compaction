@@ -1,0 +1,178 @@
+# Design notes
+
+The details behind the [README](../README.md): how decisions stay cache-friendly, how providers and relays are picked, the integration points, and what was measured along the way.
+
+## Why a separate package
+
+The scoring core comes from [`fast-jev-compaction`](https://github.com/tamaratran/fast-jev-compaction)
+(MIT), vendored under `src/vendor/fast-jev/` at commit `e3f262a` — it is not
+published to npm, and its own hook half targets Claude Code's plugin API
+(`import type { Register, SessionMessage } from 'claude-code'`), which omp
+cannot load. This package supplies the omp side: provider selection, message
+mapping, the two integration points, and the tests.
+
+Re-sync the vendored core by copying `src/{compact,state,types,request}.ts`
+from upstream and updating `src/vendor/fast-jev/UPSTREAM_COMMIT`.
+
+## Sticky: the prefix is rewritten rarely
+
+Rewriting the context invalidates the provider's prompt cache, and a cache
+write only pays back over tens of requests. So decisions are **remembered**,
+not recomputed: between rewrites the same `tool_use_id -> replacement` map is
+re-applied, the covered prefix comes back byte-identical, and anything newer
+passes through untouched.
+
+A rewrite happens when the context has grown past `rewriteGrowth` (default
++40%) **and** at least `minRequestsBetweenRewrites` (default 15) requests have
+passed, or unconditionally after `maxRequestsBetweenRewrites` (default 40).
+
+Measured replaying a real 16,198-message session: 40 requests produced **3
+rewrites and 37 reuses**, one rewrite per 13.3 requests, with **0 prefix
+breaks** across 39 checks.
+
+Because rewrites are rare, sticky mode also covers cache-served sessions.
+Setting `sticky: false` restores per-request rewriting, and with it the cache
+guard below.
+
+## The cache guard, for the non-sticky path
+
+Reduction rewrites the start of a conversation, which invalidates the
+provider's prefix cache. On a session the provider is already serving from
+cache that is a pure loss: a cheap request becomes a full-price one.
+
+Measured across 14 live sessions on one machine: thirteen ran at 98-100% cache
+hits costing $0.05-$0.40 per request, and one ran at 6% costing $2.87. So the
+reducer reads the last assistant message's `usage` and skips any session whose
+context is at least 80% cache reads (`OMP_JEV_CACHE_CEILING`, set 1 to
+disable). Replayed against those 14 sessions it skips exactly the 13 cheap
+ones and reduces the one paying full price, protecting $1.81 per request round
+while still capturing $2.61.
+
+## One caution before fleet-wide use
+
+Every reduction sends the conversation state (tool names, inputs, and message
+text; tool *outputs* are replaced by size notes first) to the decision
+endpoint. On a shared machine that is one more place your work travels to.
+Cost is negligible, about $0.0005 per pass, and decisions are cached.
+
+## Providers
+
+| Provider | Endpoint | Model | Key |
+|---|---|---|---|
+| TypeSafe | `POST https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` |
+| OpenRouter | `POST https://openrouter.ai/api/alpha/decisions` | `~typesafe/jev-latest` | `OPENROUTER_API_KEY` |
+
+Both model ids are rolling aliases for the newest Jev release, so the plugin
+follows new releases without an update. On OpenRouter the leading `~` is part
+of the id; `typesafe/jev-latest` without it is rejected. `OMP_JEV_MODEL` pins a
+specific version if one is ever needed.
+
+Both take the identical `{model, state, questions}` body and return `noul`
+probabilities, so one client covers both. `TYPESAFE_API_KEY` wins when both are
+set; `OMP_JEV_PROVIDER` forces one. OpenRouter's path is explicitly alpha
+upstream and may move — `OMP_JEV_BASE_URL` overrides it without a code change.
+
+### Through a key relay (no key in the session)
+
+The key can stay out of the agent session entirely. With no key set, the plugin
+uses a relay that adds the key on the way out:
+
+- `OMP_JEV_BASE_URL` pointing at the relay's decision endpoint, with no key set,
+  is called without an `Authorization` header.
+- Otherwise, if omp's own OpenRouter provider in `~/.omp/agent/models.yml` is a
+  keyless relay (`auth: none`, `baseUrl` ending in `/api/v1`), the plugin uses
+  that relay's `/api/alpha/decisions` endpoint. A machine that already routes
+  omp through a relay such as a keyring needs no extra setting:
+
+```yaml
+providers:
+  openrouter:
+    baseUrl: http://127.0.0.1:7700/agents/openrouter/api/v1
+    auth: none
+```
+
+A key in the environment still wins over either relay.
+
+Measured on OpenRouter: ~430 ms per decision request, $0.0000198 for 472 input
+tokens.
+
+## Dropped output is recoverable
+
+A dropped payload is written to `~/.omp/jev-spill/<YYYY-MM-DD>/<hash>.txt` (the
+UTC day it was written) and the replacement text names that file, so the agent
+gets it back with one `read` instead of re-running the tool. Identical payloads
+spilled the same day share one file.
+
+This matters because reduction does lose facts. Measured with
+`scripts/recall.ts`: full context answered **100%** of planted questions,
+reduced context **63-75%**. With parking on, the misses are **recoverable: 0
+permanent losses** across both thresholds tested. Switch it off with
+`OMP_JEV_SPILL=0` and the misses become permanent.
+
+Spill files are deleted 14 to 15 days after they are written (set
+`OMP_JEV_SPILL_RETENTION_DAYS`, `0` keeps them forever): a day folder is removed
+whole once the end of its day is past retention, so cleanup never touches a
+folder a spill can still be writing to. The directory is swept about once an
+hour, from whichever omp process spills next (two processes may rarely both
+sweep, which is harmless); only day folders and pre-0.2.0
+`<hash>.txt` files are touched. Spilling an identical payload on a later day
+writes a fresh copy for that day.
+
+## The two integration points
+
+### `context` — continuous reduction (recommended)
+
+Continuous reduction is on by default; set `OMP_JEV_CONTEXT=0` to disable it.
+omp's `context` event replaces the messages of a **single request**, so the
+session on disk is untouched and a wrong judgement costs one turn instead of
+destroying history.
+
+Cached answers are scoped to an exact Jev state and a digest of the original
+tool call, full input, full result, and error state. Temporary names such as
+`t1` repeat in every window and are never identities. A changed goal, history,
+or output forces a fresh Jev evaluation.
+
+### `session_before_compact` — replaces the compaction summary
+
+Always registered. When omp decides to compact, the region it is about to
+discard is scored and returned as verbatim retained history instead of a
+written summary.
+
+**Know this before relying on it:** omp prunes tool output *before* this hook
+runs. In live sessions the region handed over was usually already reduced by
+omp's own `shake` to markers like `[shaken ~516 tokens — recover: artifact://6]`
+(55 chars each), or held no tool calls at all. The hook then declines and omp
+compacts normally. It is useful only when raw results survive into the region,
+so the continuous `context` path is the one that pays.
+
+## The keep threshold and safe mode
+
+`keepThreshold` is the dial that matters, but **safe mode makes it hard to
+misuse**: by default a low score can only remove a tool's *output*, never the
+record that the call happened. Erasing the call erases the evidence the work
+was done, so the agent can repeat it or contradict itself.
+
+Because of that, saving plateaus instead of running away. Measured on two real
+sessions, thresholds 0.3, 0.5 and 0.7 produce byte-identical output at 53.6%
+and 55% reduction, while the old behaviour reached 96% by deleting 63 of 66
+steps. At `0.2`, where Jev is genuinely selective, both modes are within 0.4
+points, so the safety is nearly free.
+
+## Failure behaviour
+
+Every path degrades instead of breaking a turn: a missing key, a provider
+outage, a timeout or a malformed answer is logged and the handler returns
+nothing, leaving omp's own compaction and context in place.
+
+## Two adapter details worth keeping
+
+- omp's assistant tool-call part is `{type:'toolCall', id, name, arguments}`,
+  while its tool **result** is a separate `role:'toolResult'` message with
+  `toolCallId`/`toolName`. Mapping the wrong names produced a live
+  `use.tool.length` crash before this was fixed against omp's real types.
+- The scoring core always pins tool calls in the first message. omp's
+  compaction region frequently *begins* with the assistant message holding
+  every tool call, so that rule pinned the whole region (`calls=1 pinned=1`,
+  0% reduction). A sentinel message takes index 0 and is dropped again before
+  rendering.
+
